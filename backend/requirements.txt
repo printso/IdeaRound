@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]
+aiomysql
+pydantic
+pydantic-settings
+pyyaml
+python-dotenv
+greenlet
+openai # For LLM calls
+python-docx # Since we already used it, might as well keep it if we need to parse uploaded docs later.

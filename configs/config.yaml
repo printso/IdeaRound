@@ -1,0 +1,11 @@
+database:
+  url: "mysql+aiomysql://root:root@127.0.0.1/IdeaRound"
+  echo: false
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  reload: true
+
+prompts:
+  base_path: "configs/prompts"
