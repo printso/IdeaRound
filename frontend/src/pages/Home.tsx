@@ -19,14 +19,14 @@ import {
   Typography,
   message,
 } from 'antd';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getLLMConfigs, streamChatByLLMConfig } from '../api/llm';
 import type { LLMConfig } from '../api/llm';
 
 const { Header, Sider, Content, Footer } = Layout;
-const { Title, Paragraph, Text } = Typography;
+const { Paragraph, Text } = Typography;
 
 type IntentCardState = {
   coreGoal: string;
@@ -34,7 +34,15 @@ type IntentCardState = {
   painPoints: string;
 };
 
-type StepKey = 'intent' | 'roles' | 'roundtable';
+type StepKey = 'roundtable' | 'roles' | 'roundtable_view';
+
+type RoundtableRoom = {
+  id: string;
+  name: string;
+  createdAt: string;
+};
+
+type RoundtableStage = 'brief' | 'final';
 
 type ProbeOption = {
   id: string;
@@ -65,7 +73,7 @@ const Home = () => {
   const [models, setModels] = useState<LLMConfig[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<number | undefined>(undefined);
-  const [step, setStep] = useState<StepKey>('intent');
+  const [step, setStep] = useState<StepKey>('roundtable');
   const [initialDemand, setInitialDemand] = useState('');
   const [probeQuestions, setProbeQuestions] = useState<ProbeQuestion[]>([]);
   const [probeTurns, setProbeTurns] = useState<ProbeTurn[]>([]);
@@ -97,6 +105,10 @@ const Home = () => {
   const [canvasConsensus, setCanvasConsensus] = useState<string[]>([]);
   const [canvasDisputes, setCanvasDisputes] = useState<string[]>([]);
   const [canvasUpdatedAt, setCanvasUpdatedAt] = useState('');
+  const [roundtableRooms, setRoundtableRooms] = useState<RoundtableRoom[]>([]);
+  const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
+  const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>('brief');
+  const [pendingAutoSend, setPendingAutoSend] = useState<{ roomId: string; text: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [form] = Form.useForm();
 
@@ -245,12 +257,87 @@ const Home = () => {
       message.warning('必须包含审计官角色');
       return;
     }
+    setMessages([]);
+    setCanvasConsensus([]);
+    setCanvasDisputes([]);
+    setCanvasUpdatedAt('');
+    setRoundtableStage('brief');
     setRolesReady(true);
     setRoomReady(true);
-    setRoomId(`room_${Date.now().toString(36)}`);
-    setStep('roundtable');
+    const newRoomId = `room_${Date.now().toString(36)}`;
+    setRoomId(newRoomId);
+    const newRoom: RoundtableRoom = {
+      id: newRoomId,
+      name: `圆桌空间-${new Date().toLocaleString()}`,
+      createdAt: new Date().toLocaleString(),
+    };
+    setRoundtableRooms((prev) => [newRoom, ...prev]);
+    setStep('roundtable_view');
     setCanvasUpdatedAt(new Date().toLocaleString());
+    const seedLines = [
+      initialDemand.trim() ? `需求原始描述：${initialDemand.trim()}` : '',
+      intentCard.coreGoal ? `核心目标：${intentCard.coreGoal}` : '',
+      intentCard.constraints ? `限制条件：${intentCard.constraints}` : '',
+      intentCard.painPoints ? `关键痛点：${intentCard.painPoints}` : '',
+      '请各角色先给出最关键的 3-5 条核心要点（不要输出总结性方案）。',
+    ].filter(Boolean);
+    const seedText = seedLines.join('\n');
+    if (seedText.trim()) {
+      setPendingAutoSend({ roomId: newRoomId, text: seedText });
+    }
     message.success('角色矩阵确认完成，已自动创建圆桌空间');
+  };
+
+  const createNewRoundtable = () => {
+    setStep('roundtable');
+    setRoomReady(false);
+    setRoomId('');
+    setInitialDemand('');
+    setProbeQuestions([]);
+    setProbeTurns([]);
+    setIntentCard({ coreGoal: '', constraints: '', painPoints: '' });
+    setIntentReady(false);
+    setRolesReady(false);
+    setRoles([]);
+    setMessages([]);
+    setCanvasConsensus([]);
+    setCanvasDisputes([]);
+    setCanvasUpdatedAt('');
+    setRoundtableStage('brief');
+    setPendingAutoSend(null);
+  };
+
+  const selectRoundtableRoom = (room: RoundtableRoom) => {
+    setRoomId(room.id);
+    setStep('roundtable_view');
+    setRoomReady(true);
+  };
+
+  const deleteRoundtableRoom = (roomIdToDelete: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRoundtableRooms((prev) => prev.filter((room) => room.id !== roomIdToDelete));
+    if (roomId === roomIdToDelete) {
+      const remaining = roundtableRooms.filter((room) => room.id !== roomIdToDelete);
+      if (remaining.length > 0) {
+        selectRoundtableRoom(remaining[0]);
+      } else {
+        createNewRoundtable();
+      }
+    }
+    message.success('圆桌空间已删除');
+  };
+
+  const startEditingRoomName = (roomIdToEdit: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingRoomId(roomIdToEdit);
+  };
+
+  const saveRoomName = (roomIdToSave: string, newName: string) => {
+    setRoundtableRooms((prev) =>
+      prev.map((room) => (room.id === roomIdToSave ? { ...room, name: newName } : room))
+    );
+    setEditingRoomId(null);
+    message.success('名称已更新');
   };
 
   const stopStreaming = () => {
@@ -260,29 +347,51 @@ const Home = () => {
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
   };
 
-  const buildTranscript = (items: { speakerName: string; content: string }[]) => {
+  const buildTranscript = useCallback((items: { speakerName: string; content: string }[]) => {
     const slice = items.slice(-12);
     return slice.map((m) => `${m.speakerName}：${m.content}`).join('\n');
-  };
+  }, []);
 
-  const buildAgentSystemPrompt = (role: RoleMember) => {
+  const buildAgentSystemPrompt = useCallback((role: RoleMember, stage: RoundtableStage) => {
     const base = [
-      '你是圆桌创意中的一个角色，请保持高信噪比，给出可执行建议，避免客套话。',
+      '你是圆桌创意中的一个角色，请保持高信噪比，避免客套话与重复。',
       `你的身份：${role.name}（立场：${role.stance}）。`,
       `用户意图锚点：${intentCard.coreGoal || '未提供'}。`,
       intentCard.constraints ? `限制条件：${intentCard.constraints}` : '',
       intentCard.painPoints ? `待解决痛点：${intentCard.painPoints}` : '',
-      '请用 Markdown 输出，结构清晰（要点/步骤/风险/指标）。',
     ].filter(Boolean);
-    return base.join('\n');
-  };
 
-  const sendToRoundtable = async () => {
+    if (stage === 'brief') {
+      base.push(
+        '当前处于「脑暴发散阶段」。',
+        '只输出核心要点：3-5 条，短句，单条不超过 20 个字。',
+        '不要输出总结性方案，不要写步骤/里程碑/落地计划，不要写“综上/总结/最终方案”。',
+        role.id === 'audit'
+          ? '你是审计官：请用“优点/缺点”各 2-3 条进行严格评审（同样要短）。'
+          : '直接给出你认为最关键的点即可。',
+        '用 Markdown 输出，建议使用无序列表。',
+      );
+    } else {
+      base.push(
+        '当前处于「收敛定稿阶段」。',
+        '请基于当前对话给出总结性方案：目标拆解 → 关键路径 → 风险与对策 → 指标与验证 → 下一步行动清单。',
+        role.id === 'audit'
+          ? '你是审计官：在方案后补充“优缺点/风险/需要补证的数据与实验”。'
+          : '请给出可执行的落地方案，避免空话。',
+        '用 Markdown 输出，结构清晰。',
+      );
+    }
+
+    return base.join('\n');
+  }, [intentCard.constraints, intentCard.coreGoal, intentCard.painPoints]);
+
+  const sendToRoundtable = useCallback(async (overrideText?: string, overrideStage?: RoundtableStage) => {
     if (!selectedModelId) {
       message.warning('请选择一个可用模型');
       return;
     }
-    if (!userPrompt.trim()) {
+    const userText = (overrideText ?? userPrompt).trim();
+    if (!userText) {
       message.warning('请输入观点/问题');
       return;
     }
@@ -295,14 +404,17 @@ const Home = () => {
       return;
     }
 
+    const stage = overrideStage ?? roundtableStage;
+
     const controller = new AbortController();
     abortRef.current = controller;
     setSending(true);
 
     const now = new Date().toLocaleTimeString();
     const userMessageId = `m_user_${Date.now()}`;
-    const userText = userPrompt.trim();
-    setUserPrompt('');
+    if (!overrideText) {
+      setUserPrompt('');
+    }
 
     setMessages((prev) => [
       ...prev,
@@ -345,7 +457,7 @@ const Home = () => {
           selectedModelId,
           {
             message: `对话记录（最近）：\n${transcript}\n\n用户本轮输入：${userText}`,
-            system_prompt: `${buildAgentSystemPrompt(role)}\n\n${systemPrompt.trim() ? `补充系统提示词：${systemPrompt.trim()}` : ''}`,
+            system_prompt: `${buildAgentSystemPrompt(role, stage)}\n\n${systemPrompt.trim() ? `补充系统提示词：${systemPrompt.trim()}` : ''}`,
           },
           {
             onDelta: (delta) => {
@@ -385,15 +497,17 @@ const Home = () => {
 
       setCanvasConsensus((prev) => {
         const next = [...prev];
-        if (!next.includes('已生成可执行思路草案')) {
-          next.push('已生成可执行思路草案');
+        const text = stage === 'final' ? '已输出总结性方案' : '已生成核心要点';
+        if (!next.includes(text)) {
+          next.push(text);
         }
         return next.slice(-6);
       });
       setCanvasDisputes((prev) => {
         const next = [...prev];
-        if (!next.includes('存在风险与投入产出不确定性，需要进一步验证')) {
-          next.push('存在风险与投入产出不确定性，需要进一步验证');
+        const text = stage === 'final' ? '仍需验证关键假设与指标' : '仍有未验证假设';
+        if (!next.includes(text)) {
+          next.push(text);
         }
         return next.slice(-6);
       });
@@ -407,77 +521,159 @@ const Home = () => {
       setSending(false);
       abortRef.current = null;
     }
+  }, [
+    autoBrainstorm,
+    buildAgentSystemPrompt,
+    buildTranscript,
+    messages,
+    roomReady,
+    roles,
+    roundtableStage,
+    selectedModelId,
+    sending,
+    systemPrompt,
+    userPrompt,
+  ]);
+
+  useEffect(() => {
+    if (!pendingAutoSend) {
+      return;
+    }
+    if (!roomReady || roomId !== pendingAutoSend.roomId) {
+      return;
+    }
+    if (sending || messages.length > 0) {
+      return;
+    }
+    setPendingAutoSend(null);
+    setUserPrompt('');
+    void sendToRoundtable(pendingAutoSend.text, 'brief');
+  }, [messages.length, pendingAutoSend, roomId, roomReady, sending, sendToRoundtable]);
+
+  const generateFinalPlan = () => {
+    if (!roomReady) {
+      message.warning('请先创建圆桌空间');
+      return;
+    }
+    if (sending) {
+      message.warning('正在生成中，请稍候或点击停止');
+      return;
+    }
+    setRoundtableStage('final');
+    void sendToRoundtable('我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。', 'final');
   };
 
   const canGoRoles = intentReady;
-  const canGoRoundtable = rolesReady;
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ background: '#ffffff', borderBottom: '1px solid #f0f0f0', padding: '0 16px' }}>
-        <Row justify="space-between" align="middle" style={{ height: '100%' }}>
-          <Col>
-            <Space>
-              <Title level={4} style={{ margin: 0 }}>
-                圆桌创意 · 工作台
-              </Title>
-              <Tag color={step === 'intent' ? 'blue' : step === 'roles' ? 'gold' : 'green'}>
-                {step === 'intent' ? '意图洞察' : step === 'roles' ? '角色矩阵' : '圆桌空间'}
-              </Tag>
-              {roomReady && (
-                <Text type="secondary">
-                  房间：{roomId}
-                </Text>
-              )}
-              <Button type="link" href="/admin" style={{ padding: 0 }}>
-                后台管理
-              </Button>
-            </Space>
-          </Col>
-          <Col>
-            <Space>
-              <Select
-                loading={loadingModels}
-                value={selectedModelId}
-                placeholder="选择模型"
-                style={{ width: 280 }}
-                onChange={(value) => setSelectedModelId(value)}
-                options={modelSelectOptions}
-              />
-              <Input
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="补充系统提示词（可选）"
-                style={{ width: 320 }}
-              />
-            </Space>
-          </Col>
-        </Row>
+      <Header className="header" style={{ display: 'flex', alignItems: 'center', background: '#001529' }}>
+        <img src="/logo.png" alt="IdeaRound Logo" style={{ height: '32px', marginRight: '12px', borderRadius: '4px' }} />
+        <div className="logo" style={{ color: 'white', fontSize: '1.2rem', fontWeight: 'bold', marginRight: '20px' }}>
+          圆桌创意 · 工作台
+        </div>
+        <Menu
+          theme="dark"
+          mode="horizontal"
+          selectedKeys={[step]}
+          style={{ flex: 1, background: 'transparent' }}
+          items={[
+            { key: 'roundtable', label: '圆桌空间' },
+            { key: 'roles', label: '角色矩阵', disabled: !canGoRoles },
+            { key: 'roundtable_view', label: '查看模式', disabled: !roomReady },
+          ]}
+          onClick={(e) => setStep(e.key as StepKey)}
+        />
+        <Space>
+          <Button type="link" href="/admin" style={{ color: 'rgba(255,255,255,0.85)' }}>
+            后台管理
+          </Button>
+          <Select
+            loading={loadingModels}
+            value={selectedModelId}
+            placeholder="选择模型"
+            style={{ width: 200 }}
+            onChange={(value) => setSelectedModelId(value)}
+            options={modelSelectOptions}
+            dropdownStyle={{ background: '#fff' }}
+          />
+          <Input
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            placeholder="系统提示词"
+            style={{ width: 240 }}
+            variant="filled"
+          />
+        </Space>
       </Header>
 
       <Layout>
-        <Sider width={220} style={{ background: '#ffffff', borderRight: '1px solid #f0f0f0' }}>
-          <Menu
-            mode="inline"
-            selectedKeys={[step]}
-            items={[
-              { key: 'intent', label: '意图洞察' },
-              { key: 'roles', label: '角色矩阵', disabled: !canGoRoles },
-              { key: 'roundtable', label: '圆桌空间', disabled: !canGoRoundtable },
-            ]}
-            onClick={(e) => setStep(e.key as StepKey)}
-          />
-          <Divider style={{ margin: '12px 0' }} />
-          <div style={{ padding: '0 16px 12px 16px' }}>
-            <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              流程：意图洞察 → 角色矩阵 → 圆桌空间
-            </Paragraph>
+        <Sider width={220} style={{ background: '#fff', borderRight: '1px solid #f0f0f0' }}>
+          <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0' }}>
+            <Space direction="vertical" size="small" style={{ width: '100%' }}>
+              <Button type="primary" icon={<span>+</span>} onClick={createNewRoundtable} block>
+                新建圆桌空间
+              </Button>
+            </Space>
+          </div>
+          <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
+            <List
+              dataSource={roundtableRooms}
+              renderItem={(room) => (
+                <List.Item
+                  key={room.id}
+                  onClick={() => selectRoundtableRoom(room)}
+                  style={{
+                    padding: '12px 16px',
+                    cursor: 'pointer',
+                    background: roomId === room.id ? '#e6f7ff' : 'transparent',
+                  }}
+                  actions={[
+                    <Button
+                      key="edit"
+                      type="text"
+                      size="small"
+                      onClick={(e) => startEditingRoomName(room.id, e)}
+                    >
+                      编辑
+                    </Button>,
+                    <Button
+                      key="delete"
+                      type="text"
+                      size="small"
+                      danger
+                      onClick={(e) => deleteRoundtableRoom(room.id, e)}
+                    >
+                      删除
+                    </Button>,
+                  ]}
+                >
+                  <List.Item.Meta
+                    title={
+                      editingRoomId === room.id ? (
+                        <Input
+                          defaultValue={room.name}
+                          size="small"
+                          onBlur={(e) => saveRoomName(room.id, e.target.value)}
+                          onPressEnter={(e) => saveRoomName(room.id, e.currentTarget.value)}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <Text ellipsis style={{ maxWidth: 160 }}>{room.name}</Text>
+                      )
+                    }
+                    description={<Text type="secondary" style={{ fontSize: 11 }}>{room.createdAt}</Text>}
+                  />
+                </List.Item>
+              )}
+            />
           </div>
         </Sider>
 
         <Layout style={{ background: '#f5f5f5' }}>
           <Content style={{ padding: 16 }}>
-            {step === 'intent' && (
+            {step === 'roundtable' && (
               <Row gutter={16}>
                 <Col xs={24} xl={14}>
                   <Card title="意图洞察交互" style={{ borderRadius: 8 }}>
@@ -646,7 +842,7 @@ const Home = () => {
               </Row>
             )}
 
-            {step === 'roundtable' && (
+            {step === 'roundtable_view' && (
               <Row gutter={16}>
                 <Col xs={24} xl={15}>
                   <Card title="圆桌空间（群聊）" style={{ borderRadius: 8 }}>
@@ -742,12 +938,16 @@ const Home = () => {
                           <Text>群聊模式</Text>
                           <Switch checked={autoBrainstorm} onChange={(v) => setAutoBrainstorm(v)} />
                         </Space>
+                        <Button type="primary" disabled={!roomReady || sending || messages.length === 0} onClick={generateFinalPlan}>
+                          生成最终方案
+                        </Button>
                         <Button
                           onClick={() => {
                             setMessages([]);
                             setCanvasConsensus([]);
                             setCanvasDisputes([]);
                             setCanvasUpdatedAt(new Date().toLocaleString());
+                            setRoundtableStage('brief');
                           }}
                         >
                           清空讨论
@@ -779,7 +979,7 @@ const Home = () => {
                 </Col>
               </Row>
             )}
-            {step === 'roundtable' && (
+            {step === 'roundtable_view' && (
               <Row gutter={12} align="middle">
                 <Col flex="auto">
                   <Input.TextArea
@@ -793,7 +993,7 @@ const Home = () => {
                 </Col>
                 <Col>
                   <Space direction="vertical">
-                    <Button type="primary" loading={sending} onClick={sendToRoundtable}>
+                    <Button type="primary" loading={sending} onClick={() => void sendToRoundtable()}>
                       发送
                     </Button>
                     <Button disabled={!sending} onClick={stopStreaming}>
