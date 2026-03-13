@@ -18,6 +18,7 @@ import {
   Tag,
   Typography,
   message,
+  Modal,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -109,6 +110,9 @@ const Home = () => {
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>('brief');
   const [pendingAutoSend, setPendingAutoSend] = useState<{ roomId: string; text: string } | null>(null);
+  const [customProbeOptions, setCustomProbeOptions] = useState<Record<string, string>>({});
+  const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
+  const [newRoleName, setNewRoleName] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const [form] = Form.useForm();
 
@@ -243,6 +247,33 @@ const Home = () => {
 
   const toggleRoleSelected = (roleId: string) => {
     setRoles((prev) => prev.map((role) => (role.id === roleId ? { ...role, selected: !role.selected } : role)));
+  };
+
+  const addCustomRole = () => {
+    if (!newRoleName.trim()) {
+      message.warning('请输入角色名称');
+      return;
+    }
+    const newRole: RoleMember = {
+      id: `custom_${Date.now()}`,
+      name: newRoleName.trim(),
+      stance: '建设',
+      desc: '自定义角色',
+      selected: true,
+    };
+    setRoles((prev) => [...prev, newRole]);
+    setNewRoleName('');
+    message.success(`已添加角色：${newRole.name}`);
+  };
+
+  const deleteRole = (roleId: string) => {
+    const role = roles.find((r) => r.id === roleId);
+    if (role?.id === 'pm' || role?.id === 'arch' || role?.id === 'ops' || role?.id === 'risk' || role?.id === 'audit') {
+      message.warning('默认角色不能删除');
+      return;
+    }
+    setRoles((prev) => prev.filter((r) => r.id !== roleId));
+    message.success(`已删除角色：${role?.name}`);
   };
 
   const confirmRoles = () => {
@@ -677,7 +708,8 @@ const Home = () => {
               <Row gutter={16}>
                 <Col xs={24} xl={14}>
                   <Card title="意图洞察交互" style={{ borderRadius: 8 }}>
-                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                    <div style={{ maxHeight: 'calc(100vh - 280px)', overflowY: 'auto', paddingRight: 8 }}>
+                      <Space direction="vertical" size={12} style={{ width: '100%' }}>
                       <Input.TextArea
                         rows={3}
                         value={initialDemand}
@@ -685,6 +717,23 @@ const Home = () => {
                         placeholder="请简要描述你的需求（回车后不会立即建群，而是先澄清意图）"
                       />
                       <Space>
+                        <Button 
+                          onClick={() => {
+                            const sampleContent = `我想开发'小秘'，一款本地优先、隐私主权的开源个人 AI 管家。
+
+核心逻辑：必须支持包括语音、拍照、截图、即时消息转发、文档解析等 8 种媒介的零门槛输入。其底层通过分级 AI 架构 (Hybrid AI) 运行，在确保端侧轻量化处理的同时，通过智能知识索引引擎，将碎片化的信息自动转化为可行动的任务与动态关联的个人第二大脑。
+
+硬性约束：
+1. 隐私至上：所有 RAG 索引、结构化数据和 SQLite 数据库必须默认存储在本地，支持自建 WebDAV 或 E2EE 加密同步，确保用户数据的绝对所有权。
+2. 收件箱缓冲机制：拒绝'任务垃圾场'。所有 AI 解析的内容需进入待确认区，通过类似的高效率交互由用户确认为任务、知识或忽略，维护日程的严肃性。
+3. 免打扰主动管理：具备情境感知能力，仅在合适的时间窗口进行批量汇总提醒，而非无休止的即时打扰。
+
+痛点场景：彻底解决我每天在微信截图、语音随笔、网页剪藏与工作邮件之间反复横跳、碎片信息无法结构化统一管理的焦虑。它能从一张活动海报中自动提取时间地点，也能在我要开会前，自动联想并推送出存储在本地的相关项目文档。`;
+                            setInitialDemand(sampleContent);
+                          }}
+                        >
+                          加载示例输入
+                        </Button>
                         <Button type="primary" onClick={startIntentProbing}>
                           开始洞察
                         </Button>
@@ -736,12 +785,39 @@ const Home = () => {
                                     {opt.label}
                                   </Button>
                                 ))}
+                                <Input
+                                  key={`input-${q.id}`}
+                                  placeholder="其他（请输入）"
+                                  style={{ width: 200 }}
+                                  value={customProbeOptions[q.id] || ''}
+                                  onChange={(e) => setCustomProbeOptions({ ...customProbeOptions, [q.id]: e.target.value })}
+                                  onPressEnter={() => {
+                                    const customValue = customProbeOptions[q.id]?.trim();
+                                    if (customValue) {
+                                      applyProbeAnswer(q.id, customValue);
+                                      setCustomProbeOptions({ ...customProbeOptions, [q.id]: '' });
+                                    }
+                                  }}
+                                />
+                                <Button
+                                  key={`add-${q.id}`}
+                                  onClick={() => {
+                                    const customValue = customProbeOptions[q.id]?.trim();
+                                    if (customValue) {
+                                      applyProbeAnswer(q.id, customValue);
+                                      setCustomProbeOptions({ ...customProbeOptions, [q.id]: '' });
+                                    }
+                                  }}
+                                >
+                                  添加
+                                </Button>
                               </Space>
                             </Card>
                           ))}
                         </Space>
                       )}
                     </Space>
+                    </div>
                   </Card>
                 </Col>
                 <Col xs={24} xl={10}>
@@ -779,7 +855,21 @@ const Home = () => {
             {step === 'roles' && (
               <Row gutter={16}>
                 <Col xs={24} xl={14}>
-                  <Card title="角色矩阵（请确认参与圆桌的角色）" style={{ borderRadius: 8 }}>
+                  <Card 
+                    title={
+                      <Space>
+                        <Button 
+                          size="small" 
+                          onClick={() => setStep('roundtable')}
+                          icon={<span>←</span>}
+                        >
+                          返回
+                        </Button>
+                        <span>角色矩阵（请确认参与圆桌的角色）</span>
+                      </Space>
+                    } 
+                    style={{ borderRadius: 8 }}
+                  >
                     {!intentReady && <Empty description="请先完成意图洞察" />}
                     {intentReady && (
                       <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -798,6 +888,41 @@ const Home = () => {
                                         ? '1px solid #1677ff'
                                         : '1px solid #f0f0f0',
                                 }}
+                                actions={
+                                  role.id.startsWith('custom_')
+                                    ? [
+                                        <Button
+                                          key="edit"
+                                          type="text"
+                                          size="small"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            const newName = prompt('编辑角色名称', role.name);
+                                            if (newName && newName.trim()) {
+                                              setRoles((prev) =>
+                                                prev.map((r) => (r.id === role.id ? { ...r, name: newName.trim() } : r))
+                                              );
+                                              message.success('角色名称已更新');
+                                            }
+                                          }}
+                                        >
+                                          编辑
+                                        </Button>,
+                                        <Button
+                                          key="delete"
+                                          type="text"
+                                          size="small"
+                                          danger
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            deleteRole(role.id);
+                                          }}
+                                        >
+                                          删除
+                                        </Button>,
+                                      ]
+                                    : undefined
+                                }
                               >
                                 <Space direction="vertical" size={6} style={{ width: '100%' }}>
                                   <Space style={{ width: '100%', justifyContent: 'space-between' }}>
@@ -815,6 +940,22 @@ const Home = () => {
                             </Col>
                           ))}
                         </Row>
+                        <Divider />
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          <Text strong>角色管理</Text>
+                          <Space>
+                            <Input
+                              placeholder="新角色名称"
+                              value={newRoleName}
+                              onChange={(e) => setNewRoleName(e.target.value)}
+                              style={{ width: 200 }}
+                              onPressEnter={addCustomRole}
+                            />
+                            <Button onClick={addCustomRole} type="primary">
+                              添加角色
+                            </Button>
+                          </Space>
+                        </Space>
                       </Space>
                     )}
                   </Card>
