@@ -1,5 +1,6 @@
-!(assets/images)
-
+<div align="center">
+<img src="assets/images/ideaRound_logo_1.png" alt="Logo 描述" width="100%">
+</div>
 ## 项目概述
 IdeaRound 是一个"认知增强与多智能体决策支持系统"，旨在通过多视角 AI 智能体协作来打破个体认知壁垒。系统支持多轮对话、智能体共识达成和创意协作。
 
