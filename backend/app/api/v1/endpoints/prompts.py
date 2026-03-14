@@ -3,9 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
 
-from backend.app.core.database import get_db
-from backend.app.models.prompt import SysPrompt
-from backend.app.schemas.prompt import Prompt, PromptCreate, PromptUpdate
+try:
+    from backend.app.core.database import get_db
+    from backend.app.models.prompt import SysPrompt
+    from backend.app.schemas.prompt import Prompt, PromptCreate, PromptUpdate
+except ImportError:
+    from app.core.database import get_db
+    from app.models.prompt import SysPrompt
+    from app.schemas.prompt import Prompt, PromptCreate, PromptUpdate
 
 router = APIRouter()
 
@@ -17,7 +22,7 @@ async def read_prompts(skip: int = 0, limit: int = 100, db: AsyncSession = Depen
 
 @router.post("/", response_model=Prompt)
 async def create_prompt(prompt: PromptCreate, db: AsyncSession = Depends(get_db)):
-    db_prompt = SysPrompt(**prompt.dict())
+    db_prompt = SysPrompt(**prompt.model_dump())
     db.add(db_prompt)
     await db.commit()
     await db.refresh(db_prompt)
@@ -30,7 +35,7 @@ async def update_prompt(prompt_id: int, prompt: PromptUpdate, db: AsyncSession =
     if not db_prompt:
         raise HTTPException(status_code=404, detail="Prompt not found")
     
-    for key, value in prompt.dict().items():
+    for key, value in prompt.model_dump(exclude_unset=True).items():
         setattr(db_prompt, key, value)
     
     await db.commit()

@@ -1,7 +1,10 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum, Float, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from backend.app.core.database import Base
+try:
+    from backend.app.core.database import Base
+except ImportError:
+    from app.core.database import Base
 import enum
 
 class ChatRoomStatus(str, enum.Enum):

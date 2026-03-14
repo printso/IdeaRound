@@ -6,9 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import AsyncGenerator, List
 
-from backend.app.core.database import get_db
-from backend.app.models.llm import LLMConfig
-from backend.app.schemas.llm import LLMChatStreamRequest, LLMConfigCreate, LLMConfigUpdate, LLMConfigResponse
+try:
+    from backend.app.core.database import get_db
+    from backend.app.models.llm import LLMConfig
+    from backend.app.schemas.llm import LLMChatStreamRequest, LLMConfigCreate, LLMConfigUpdate, LLMConfigResponse
+except ImportError:
+    from app.core.database import get_db
+    from app.models.llm import LLMConfig
+    from app.schemas.llm import LLMChatStreamRequest, LLMConfigCreate, LLMConfigUpdate, LLMConfigResponse
 
 router = APIRouter()
 

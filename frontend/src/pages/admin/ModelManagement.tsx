@@ -15,7 +15,8 @@ import {
   Typography,
   message,
 } from 'antd';
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlusOutlined, MessageOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -40,6 +41,7 @@ const PROVIDER_OPTIONS = [
 ];
 
 const ModelManagement: React.FC = () => {
+  const navigate = useNavigate();
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
@@ -52,6 +54,10 @@ const ModelManagement: React.FC = () => {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form] = Form.useForm();
   const { Text } = Typography;
+
+  const navigateToChat = (record: LLMConfig) => {
+    navigate('/admin/chat', { state: { modelId: record.id } });
+  };
 
   const fetchConfigs = async () => {
     setLoading(true);
@@ -198,8 +204,12 @@ const ModelManagement: React.FC = () => {
           <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} size="small">
             编辑
           </Button>
-          <Button size="small" onClick={() => openChatDrawer(record)}>
-            流式测试
+          <Button
+            size="small"
+            icon={<MessageOutlined />}
+            onClick={() => navigateToChat(record)}
+          >
+            聊天
           </Button>
           <Popconfirm title="确认删除该模型配置？" onConfirm={() => handleDelete(record.id)}>
             <Button icon={<DeleteOutlined />} danger size="small">

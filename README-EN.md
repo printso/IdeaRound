@@ -24,9 +24,7 @@ IdeaRound/
 │   │   ├── layouts/    # Layout components
 │   │   └── pages/      # Page components
 │   └── package.json
-├── configs/            # Configuration files
-│   ├── config.yaml     # System configuration
-│   └── init.sql        # Initialization SQL
+├── .env.example        # Environment variables template
 └── README-EN.md
 ```
 
@@ -53,30 +51,16 @@ CREATE DATABASE IdeaRound CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 #### 3. Configure Environment Variables
 
-**Option 1: Using .env file (Recommended)**
+**Create .env file from template:**
 ```bash
-# Create .env file
-cat > .env << EOF
-DATABASE_URL=mysql+aiomysql://root:your_password@127.0.0.1/IdeaRound
-SERVER_HOST=0.0.0.0
-SERVER_PORT=8000
-PROMPTS_BASE_PATH=configs/prompts
-EOF
-```
+# Copy the template
+cp .env.example .env
 
-**Option 2: Modify configs/config.yaml**
-```yaml
-database:
-  url: "mysql+aiomysql://root:your_password@127.0.0.1/IdeaRound"
-  echo: false
-
-server:
-  host: "0.0.0.0"
-  port: 8000
-  reload: true
-
-prompts:
-  base_path: "configs/prompts"
+# Edit .env and set your values
+# DATABASE_URL=mysql+aiomysql://root:your_password@127.0.0.1/IdeaRound
+# SERVER_HOST=0.0.0.0
+# SERVER_PORT=8000
+# PROMPTS_BASE_PATH=configs/prompts
 ```
 
 ### Backend Setup

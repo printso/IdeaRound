@@ -1,6 +1,10 @@
 from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime
 from sqlalchemy.sql import func
-from backend.app.core.database import Base
+
+try:
+    from backend.app.core.database import Base
+except ImportError:
+    from app.core.database import Base
 
 class SysPrompt(Base):
     __tablename__ = "sys_prompts"

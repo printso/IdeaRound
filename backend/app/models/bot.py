@@ -1,6 +1,9 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime
 from sqlalchemy.sql import func
-from backend.app.core.database import Base
+try:
+    from backend.app.core.database import Base
+except ImportError:
+    from app.core.database import Base
 
 class Bot(Base):
     __tablename__ = "bots"

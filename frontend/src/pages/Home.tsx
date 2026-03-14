@@ -25,8 +25,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getLLMConfigs, streamChatByLLMConfig } from '../api/llm';
 import type { LLMConfig } from '../api/llm';
+import AppHeader from '../components/AppHeader';
 
-const { Header, Sider, Content, Footer } = Layout;
+const { Sider, Content, Footer } = Layout;
 const { Paragraph, Text } = Typography;
 
 type IntentCardState = {
@@ -71,25 +72,43 @@ type RoleMember = {
 };
 
 const Home = () => {
+  // localStorage key
+  const STORAGE_KEY = 'idearound_workspace';
+
+  // 从 localStorage 加载保存的状态
+  const loadSavedState = () => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error('加载保存的状态失败:', e);
+    }
+    return null;
+  };
+
+  const savedState = loadSavedState();
+
   const [models, setModels] = useState<LLMConfig[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
-  const [selectedModelId, setSelectedModelId] = useState<number | undefined>(undefined);
-  const [step, setStep] = useState<StepKey>('roundtable');
-  const [initialDemand, setInitialDemand] = useState('');
+  const [selectedModelId, setSelectedModelId] = useState<number | undefined>(savedState?.selectedModelId || undefined);
+  const [step, setStep] = useState<StepKey>(savedState?.step || 'roundtable');
+  const [initialDemand, setInitialDemand] = useState(savedState?.initialDemand || '');
   const [probeQuestions, setProbeQuestions] = useState<ProbeQuestion[]>([]);
   const [probeTurns, setProbeTurns] = useState<ProbeTurn[]>([]);
-  const [intentCard, setIntentCard] = useState<IntentCardState>({
+  const [intentCard, setIntentCard] = useState<IntentCardState>(savedState?.intentCard || {
     coreGoal: '',
     constraints: '',
     painPoints: '',
   });
-  const [intentReady, setIntentReady] = useState(false);
-  const [roles, setRoles] = useState<RoleMember[]>([]);
-  const [rolesReady, setRolesReady] = useState(false);
-  const [roomReady, setRoomReady] = useState(false);
-  const [roomId, setRoomId] = useState('');
+  const [intentReady, setIntentReady] = useState(savedState?.intentReady || false);
+  const [roles, setRoles] = useState<RoleMember[]>(savedState?.roles || []);
+  const [rolesReady, setRolesReady] = useState(savedState?.rolesReady || false);
+  const [roomReady, setRoomReady] = useState(savedState?.roomReady || false);
+  const [roomId, setRoomId] = useState(savedState?.roomId || '');
   const [autoBrainstorm, setAutoBrainstorm] = useState(true);
-  const [systemPrompt, setSystemPrompt] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState(savedState?.systemPrompt || '');
   const [userPrompt, setUserPrompt] = useState('');
   const [sending, setSending] = useState(false);
   const [messages, setMessages] = useState<
@@ -102,13 +121,13 @@ const Home = () => {
       streaming?: boolean;
       createdAt: string;
     }[]
-  >([]);
-  const [canvasConsensus, setCanvasConsensus] = useState<string[]>([]);
-  const [canvasDisputes, setCanvasDisputes] = useState<string[]>([]);
-  const [canvasUpdatedAt, setCanvasUpdatedAt] = useState('');
-  const [roundtableRooms, setRoundtableRooms] = useState<RoundtableRoom[]>([]);
+  >(savedState?.messages || []);
+  const [canvasConsensus, setCanvasConsensus] = useState<string[]>(savedState?.canvasConsensus || []);
+  const [canvasDisputes, setCanvasDisputes] = useState<string[]>(savedState?.canvasDisputes || []);
+  const [canvasUpdatedAt, setCanvasUpdatedAt] = useState(savedState?.canvasUpdatedAt || '');
+  const [roundtableRooms, setRoundtableRooms] = useState<RoundtableRoom[]>(savedState?.roundtableRooms || []);
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
-  const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>('brief');
+  const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>(savedState?.roundtableStage || 'brief');
   const [pendingAutoSend, setPendingAutoSend] = useState<{ roomId: string; text: string } | null>(null);
   const [customProbeOptions, setCustomProbeOptions] = useState<Record<string, string>>({});
   const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
@@ -145,6 +164,50 @@ const Home = () => {
   useEffect(() => {
     loadModels();
   }, []);
+
+  // 保存工作台状态到 localStorage
+  useEffect(() => {
+    const stateToSave = {
+      step,
+      initialDemand,
+      intentCard,
+      intentReady,
+      roles,
+      rolesReady,
+      roomReady,
+      roomId,
+      systemPrompt,
+      messages,
+      canvasConsensus,
+      canvasDisputes,
+      canvasUpdatedAt,
+      roundtableRooms,
+      roundtableStage,
+      selectedModelId,
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
+    } catch (e) {
+      console.error('保存状态失败:', e);
+    }
+  }, [
+    step,
+    initialDemand,
+    intentCard,
+    intentReady,
+    roles,
+    rolesReady,
+    roomReady,
+    roomId,
+    systemPrompt,
+    messages,
+    canvasConsensus,
+    canvasDisputes,
+    canvasUpdatedAt,
+    roundtableRooms,
+    roundtableStage,
+    selectedModelId,
+  ]);
 
   useEffect(() => {
     form.setFieldsValue(intentCard);
@@ -598,45 +661,18 @@ const Home = () => {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Header className="header" style={{ display: 'flex', alignItems: 'center', background: '#001529' }}>
-        <img src="/logo.png" alt="IdeaRound Logo" style={{ height: '32px', marginRight: '12px', borderRadius: '4px' }} />
-        <div className="logo" style={{ color: 'white', fontSize: '1.2rem', fontWeight: 'bold', marginRight: '20px' }}>
-          圆桌创意 · 工作台
-        </div>
-        <Menu
-          theme="dark"
-          mode="horizontal"
-          selectedKeys={[step]}
-          style={{ flex: 1, background: 'transparent' }}
-          items={[
-            { key: 'roundtable', label: '圆桌空间' },
-            { key: 'roles', label: '角色矩阵', disabled: !canGoRoles },
-            { key: 'roundtable_view', label: '查看模式', disabled: !roomReady },
-          ]}
-          onClick={(e) => setStep(e.key as StepKey)}
-        />
-        <Space>
-          <Button type="link" href="/admin" style={{ color: 'rgba(255,255,255,0.85)' }}>
-            后台管理
-          </Button>
-          <Select
-            loading={loadingModels}
-            value={selectedModelId}
-            placeholder="选择模型"
-            style={{ width: 200 }}
-            onChange={(value) => setSelectedModelId(value)}
-            options={modelSelectOptions}
-            dropdownStyle={{ background: '#fff' }}
-          />
-          <Input
-            value={systemPrompt}
-            onChange={(e) => setSystemPrompt(e.target.value)}
-            placeholder="系统提示词"
-            style={{ width: 240 }}
-            variant="filled"
-          />
-        </Space>
-      </Header>
+      <AppHeader
+        models={models}
+        loadingModels={loadingModels}
+        selectedModelId={selectedModelId}
+        onModelChange={setSelectedModelId}
+        systemPrompt={systemPrompt}
+        onSystemPromptChange={setSystemPrompt}
+        workspaceStep={step}
+        onWorkspaceStepChange={(key) => setStep(key as StepKey)}
+        canGoRoles={canGoRoles}
+        roomReady={roomReady}
+      />
 
       <Layout>
         <Sider width={220} style={{ background: '#fff', borderRight: '1px solid #f0f0f0' }}>

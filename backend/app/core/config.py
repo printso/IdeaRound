@@ -1,37 +1,47 @@
 import os
-import yaml
 from pydantic_settings import BaseSettings
-from typing import Dict, Any
+from typing import Optional, List
 
 class Settings(BaseSettings):
-    DATABASE_URL: str
+    # 基础配置
+    DATABASE_URL: str = "sqlite+aiosqlite:///./idearound.db"
     SERVER_HOST: str = "0.0.0.0"
     SERVER_PORT: int = 8000
     SERVER_RELOAD: bool = True
     PROMPT_BASE_PATH: str = "configs/prompts"
+    
+    # 日志配置
+    LOG_LEVEL: str = "INFO"
+    
+    # CORS 配置
+    CORS_ORIGINS: str = "*"  # 逗号分隔的域名列表
+    
+    # 数据库连接池配置
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_RECYCLE: int = 1800
+    
+    # 认证配置
+    AUTH_ENABLED: bool = True  # 是否启用登录认证
+    JWT_SECRET_KEY: str = "your-secret-key-change-this-in-production"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 天
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    
+    # 初始管理员配置
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_EMAIL: str = "admin@example.com"
+    ADMIN_PASSWORD: str = "admin123"  # 首次启动后应修改
 
     class Config:
         env_file = ".env"
+        case_sensitive = False
+        
+    @property
+    def cors_origins_list(self) -> List[str]:
+        """获取 CORS 域名列表"""
+        if self.CORS_ORIGINS == "*":
+            return ["*"]
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
 
-def load_config() -> Settings:
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "configs", "config.yaml")
-    
-    if not os.path.exists(config_path):
-        # Fallback or error if config file is missing
-        print(f"Config file not found at {config_path}")
-        return Settings(DATABASE_URL="sqlite+aiosqlite:///./test.db") # Default fallback
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        config_data = yaml.safe_load(f)
-
-    db_url = config_data.get("database", {}).get("url", "sqlite+aiosqlite:///./test.db")
-    
-    return Settings(
-        DATABASE_URL=db_url,
-        SERVER_HOST=config_data.get("server", {}).get("host", "0.0.0.0"),
-        SERVER_PORT=config_data.get("server", {}).get("port", 8000),
-        SERVER_RELOAD=config_data.get("server", {}).get("reload", True),
-        PROMPT_BASE_PATH=config_data.get("prompts", {}).get("base_path", "configs/prompts")
-    )
-
-settings = load_config()
+settings = Settings()
