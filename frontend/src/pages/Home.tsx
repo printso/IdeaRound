@@ -1,6 +1,5 @@
 import {
   Avatar,
-  Badge,
   Button,
   Card,
   Col,
@@ -10,9 +9,7 @@ import {
   Input,
   Layout,
   List,
-  Menu,
   Row,
-  Select,
   Space,
   Switch,
   Tag,
@@ -20,12 +17,13 @@ import {
   message,
   Modal,
 } from 'antd';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getLLMConfigs, streamChatByLLMConfig } from '../api/llm';
 import type { LLMConfig } from '../api/llm';
 import AppHeader from '../components/AppHeader';
+import RoundtableCanvas from '../components/RoundtableCanvas';
 
 const { Sider, Content, Footer } = Layout;
 const { Paragraph, Text } = Typography;
@@ -36,7 +34,7 @@ type IntentCardState = {
   painPoints: string;
 };
 
-type StepKey = 'roundtable' | 'roles' | 'roundtable_view';
+type StepKey = 'roundtable' | 'roles' | 'roundtable_view' | 'canvas_view';
 
 type RoundtableRoom = {
   id: string;
@@ -69,6 +67,7 @@ type RoleMember = {
   stance: '建设' | '对抗' | '中立' | '评审';
   desc: string;
   selected: boolean;
+  soulConfig?: string;  // 灵魂配置长文本
 };
 
 const Home = () => {
@@ -105,6 +104,8 @@ const Home = () => {
   const [intentReady, setIntentReady] = useState(savedState?.intentReady || false);
   const [roles, setRoles] = useState<RoleMember[]>(savedState?.roles || []);
   const [rolesReady, setRolesReady] = useState(savedState?.rolesReady || false);
+  const [roleTemplates, setRoleTemplates] = useState<{id: number; name: string; stance: string; description?: string; soul_config?: string; is_active?: boolean}[]>([]);
+  const [promptTemplates, setPromptTemplates] = useState<Record<string, string>>({});
   const [roomReady, setRoomReady] = useState(savedState?.roomReady || false);
   const [roomId, setRoomId] = useState(savedState?.roomId || '');
   const [autoBrainstorm, setAutoBrainstorm] = useState(true);
@@ -130,20 +131,11 @@ const Home = () => {
   const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>(savedState?.roundtableStage || 'brief');
   const [pendingAutoSend, setPendingAutoSend] = useState<{ roomId: string; text: string } | null>(null);
   const [customProbeOptions, setCustomProbeOptions] = useState<Record<string, string>>({});
-  const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
+  const [editingSoulConfigRole, setEditingSoulConfigRole] = useState<RoleMember | null>(null);
+  const [editingSoulConfigText, setEditingSoulConfigText] = useState('');
   const [newRoleName, setNewRoleName] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const [form] = Form.useForm();
-
-  const activeModels = useMemo(() => models.filter((item) => item.is_active), [models]);
-  const modelSelectOptions = useMemo(
-    () =>
-      activeModels.map((item) => ({
-        value: item.id,
-        label: `${item.name} (${item.model_name})`,
-      })),
-    [activeModels],
-  );
 
   const loadModels = async () => {
     setLoadingModels(true);
@@ -161,8 +153,46 @@ const Home = () => {
     }
   };
 
+  const loadRoleTemplates = async () => {
+    try {
+      const response = await fetch('/api/v1/role-templates/');
+      if (response.ok) {
+        const data = await response.json();
+        setRoleTemplates(data);
+      }
+    } catch (e) {
+      console.error('加载角色模板失败:', e);
+    }
+  };
+
+  const loadPromptTemplates = async () => {
+    try {
+      // 从系统提示词管理获取圆桌所需的提示词
+      const response = await fetch('/api/v1/prompts/roundtable');
+      console.log('提示词模板 API 响应状态:', response.status);
+      if (response.ok) {
+        const data = await response.json();
+        console.log('提示词模板数据:', data);
+        // 转换为 promptTemplates 格式
+        const templates: Record<string, string> = {};
+        if (data.brief_output_style) templates.prompt_brief_stage = data.brief_output_style;
+        if (data.final_summary_style) templates.prompt_final_stage = data.final_summary_style;
+        if (data.audit_role_system) templates.prompt_audit_brief = data.audit_role_system;
+        if (data.audit_role_system) templates.prompt_audit_final = data.audit_role_system;
+        if (data.role_agent_base) templates.prompt_base = data.role_agent_base;
+        setPromptTemplates(templates);
+      } else {
+        console.error('加载提示词模板失败，状态码:', response.status);
+      }
+    } catch (e) {
+      console.error('加载提示词模板失败:', e);
+    }
+  };
+
   useEffect(() => {
     loadModels();
+    loadRoleTemplates();
+    loadPromptTemplates();
   }, []);
 
   // 保存工作台状态到 localStorage
@@ -297,13 +327,19 @@ const Home = () => {
     }
     setIntentReady(true);
     setStep('roles');
-    const generatedRoles: RoleMember[] = [
-      { id: 'pm', name: '产品策略官', stance: '建设', desc: '目标拆解、需求路径、里程碑', selected: true },
-      { id: 'arch', name: '技术架构师', stance: '建设', desc: '可实施性、复杂度、工程风险', selected: true },
-      { id: 'ops', name: '增长运营官', stance: '中立', desc: '转化漏斗、数据指标、增长实验', selected: true },
-      { id: 'risk', name: '黑帽风控官', stance: '对抗', desc: '挑刺、压力测试、边界与风险', selected: true },
-      { id: 'audit', name: '审计官', stance: '评审', desc: '严格评审回答质量并提出优缺点', selected: true },
-    ];
+
+    // 从数据库加载的角色模板生成角色
+    const generatedRoles: RoleMember[] = roleTemplates
+      .filter((tpl) => tpl.is_active !== false)
+      .map((tpl) => ({
+        id: `role_${tpl.id}`,
+        name: tpl.name,
+        stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+        desc: tpl.description || '',
+        selected: true,
+        soulConfig: tpl.soul_config,
+      }));
+
     setRoles(generatedRoles);
     message.success('意图洞察完成，已生成初始角色矩阵');
   };
@@ -341,8 +377,10 @@ const Home = () => {
 
   const confirmRoles = () => {
     const selected = roles.filter((r) => r.selected);
-    const hasBlackhat = selected.some((r) => r.id === 'risk');
-    const hasAudit = selected.some((r) => r.id === 'audit');
+    // 检查是否包含黑帽风控官（stance为"对抗"或名称包含"黑帽"）
+    const hasBlackhat = selected.some((r) => r.stance === '对抗' || r.name.includes('黑帽'));
+    // 检查是否包含审计官（stance为"评审"或名称包含"审计"）
+    const hasAudit = selected.some((r) => r.stance === '评审' || r.name.includes('审计'));
     if (selected.length < 4 || !hasBlackhat) {
       message.warning('至少选择 3 位角色 + 1 位对抗性角色（黑帽）');
       return;
@@ -448,36 +486,53 @@ const Home = () => {
 
   const buildAgentSystemPrompt = useCallback((role: RoleMember, stage: RoundtableStage) => {
     const base = [
-      '你是圆桌创意中的一个角色，请保持高信噪比，避免客套话与重复。',
+      promptTemplates.prompt_base || '你是圆桌创意中的一个角色，请保持高信噪比，避免客套话与重复。',
       `你的身份：${role.name}（立场：${role.stance}）。`,
       `用户意图锚点：${intentCard.coreGoal || '未提供'}。`,
       intentCard.constraints ? `限制条件：${intentCard.constraints}` : '',
       intentCard.painPoints ? `待解决痛点：${intentCard.painPoints}` : '',
     ].filter(Boolean);
 
+    // 注入灵魂配置
+    if (role.soulConfig) {
+      base.push('', role.soulConfig);
+    }
+
     if (stage === 'brief') {
-      base.push(
-        '当前处于「脑暴发散阶段」。',
-        '只输出核心要点：3-5 条，短句，单条不超过 20 个字。',
-        '不要输出总结性方案，不要写步骤/里程碑/落地计划，不要写“综上/总结/最终方案”。',
-        role.id === 'audit'
-          ? '你是审计官：请用“优点/缺点”各 2-3 条进行严格评审（同样要短）。'
-          : '直接给出你认为最关键的点即可。',
-        '用 Markdown 输出，建议使用无序列表。',
-      );
+      const isAudit = role.id === 'audit' || role.name.includes('审计官');
+      if (isAudit && promptTemplates.prompt_audit_brief) {
+        base.push('', promptTemplates.prompt_audit_brief);
+      } else if (promptTemplates.prompt_brief_stage) {
+        base.push('', promptTemplates.prompt_brief_stage);
+      } else {
+        // 默认值（如果数据库未配置）
+        base.push(
+          '当前处于「脑暴发散阶段」。',
+          '只输出核心要点：3-5 条，短句，单条不超过 100 个字。',
+          '不要输出总结性方案，不要写步骤/里程碑/落地计划，不要写"综上/总结/最终方案"。',
+          '直接给出你认为最关键的点即可。',
+          '用 Markdown 输出，建议使用无序列表。',
+        );
+      }
     } else {
-      base.push(
-        '当前处于「收敛定稿阶段」。',
-        '请基于当前对话给出总结性方案：目标拆解 → 关键路径 → 风险与对策 → 指标与验证 → 下一步行动清单。',
-        role.id === 'audit'
-          ? '你是审计官：在方案后补充“优缺点/风险/需要补证的数据与实验”。'
-          : '请给出可执行的落地方案，避免空话。',
-        '用 Markdown 输出，结构清晰。',
-      );
+      const isAudit = role.id === 'audit' || role.name.includes('审计官');
+      if (isAudit && promptTemplates.prompt_audit_final) {
+        base.push('', promptTemplates.prompt_audit_final);
+      } else if (promptTemplates.prompt_final_stage) {
+        base.push('', promptTemplates.prompt_final_stage);
+      } else {
+        // 默认值（如果数据库未配置）
+        base.push(
+          '当前处于「收敛定稿阶段」。',
+          '请基于当前对话给出总结性方案：目标拆解 → 关键路径 → 风险与对策 → 指标与验证 → 下一步行动清单。',
+          '请给出可执行的落地方案，避免空话。',
+          '用 Markdown 输出，结构清晰。',
+        );
+      }
     }
 
     return base.join('\n');
-  }, [intentCard.constraints, intentCard.coreGoal, intentCard.painPoints]);
+  }, [intentCard.constraints, intentCard.coreGoal, intentCard.painPoints, promptTemplates]);
 
   const sendToRoundtable = useCallback(async (overrideText?: string, overrideStage?: RoundtableStage) => {
     if (!selectedModelId) {
@@ -654,13 +709,14 @@ const Home = () => {
       return;
     }
     setRoundtableStage('final');
-    void sendToRoundtable('我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。', 'final');
+    const convergeMsg = promptTemplates.prompt_converge_trigger || '我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。';
+    void sendToRoundtable(convergeMsg, 'final');
   };
 
   const canGoRoles = intentReady;
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ minHeight: '100dvh', overflow: 'hidden' }}>
       <AppHeader
         models={models}
         loadingModels={loadingModels}
@@ -674,7 +730,7 @@ const Home = () => {
         roomReady={roomReady}
       />
 
-      <Layout>
+      <Layout style={{ overflow: 'hidden', height: 'calc(100dvh - 64px)' }}>
         <Sider width={220} style={{ background: '#fff', borderRight: '1px solid #f0f0f0' }}>
           <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0' }}>
             <Space direction="vertical" size="small" style={{ width: '100%' }}>
@@ -683,7 +739,7 @@ const Home = () => {
               </Button>
             </Space>
           </div>
-          <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
+          <div style={{ maxHeight: 'calc(100dvh - 64px - 80px)', overflowY: 'auto' }}>
             <List
               dataSource={roundtableRooms}
               renderItem={(room) => (
@@ -738,13 +794,13 @@ const Home = () => {
           </div>
         </Sider>
 
-        <Layout style={{ background: '#f5f5f5' }}>
-          <Content style={{ padding: 16 }}>
+        <Layout style={{ background: '#f5f5f5', overflow: 'hidden' }}>
+          <Content style={{ padding: 16, flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
             {step === 'roundtable' && (
               <Row gutter={16}>
                 <Col xs={24} xl={14}>
                   <Card title="意图洞察交互" style={{ borderRadius: 8 }}>
-                    <div style={{ maxHeight: 'calc(100vh - 280px)', overflowY: 'auto', paddingRight: 8 }}>
+                    <div style={{ maxHeight: 'calc(100dvh - 64px - 140px)', overflowY: 'auto', paddingRight: 8 }}>
                       <Space direction="vertical" size={12} style={{ width: '100%' }}>
                       <Input.TextArea
                         rows={3}
@@ -793,7 +849,7 @@ const Home = () => {
                         </Button>
                       </Space>
                       <Divider style={{ margin: '8px 0' }} />
-                      {probeTurns.length === 0 && <Empty description="输入需求后点击“开始洞察”，系统将提出澄清问题并生成需求卡片" />}
+                      {probeTurns.length === 0 && <Empty description="输入需求后点击「开始洞察」，系统将提出澄清问题并生成需求卡片" />}
                       {probeTurns.length > 0 && (
                         <List
                           dataSource={probeTurns}
@@ -914,18 +970,29 @@ const Home = () => {
                             <Col xs={24} md={12} key={role.id}>
                               <Card
                                 hoverable
-                                onClick={() => toggleRoleSelected(role.id)}
                                 style={{
                                   borderRadius: 8,
                                   border:
-                                    role.id === 'risk'
+                                    role.name.includes('黑帽') || role.stance === '对抗'
                                       ? '1px solid #d4380d'
                                       : role.selected
                                         ? '1px solid #1677ff'
                                         : '1px solid #f0f0f0',
                                 }}
-                                actions={
-                                  role.id.startsWith('custom_')
+                                actions={[
+                                  <Button
+                                    key="soul"
+                                    type="text"
+                                    size="small"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingSoulConfigRole(role);
+                                      setEditingSoulConfigText(role.soulConfig || '');
+                                    }}
+                                  >
+                                    灵魂配置
+                                  </Button>,
+                                  ...(role.id.startsWith('custom_')
                                     ? [
                                         <Button
                                           key="edit"
@@ -957,14 +1024,14 @@ const Home = () => {
                                           删除
                                         </Button>,
                                       ]
-                                    : undefined
-                                }
+                                    : []),
+                                ]}
                               >
                                 <Space direction="vertical" size={6} style={{ width: '100%' }}>
                                   <Space style={{ width: '100%', justifyContent: 'space-between' }}>
                                     <Space>
                                       <Text strong>{role.name}</Text>
-                                      <Tag color={role.id === 'risk' ? 'volcano' : role.stance === '建设' ? 'blue' : 'default'}>
+                                      <Tag color={role.name.includes('黑帽') || role.stance === '对抗' ? 'volcano' : role.stance === '建设' ? 'blue' : 'default'}>
                                         {role.stance}
                                       </Tag>
                                     </Space>
@@ -1011,7 +1078,7 @@ const Home = () => {
                         确认角色并创建圆桌空间
                       </Button>
                       <Text type="secondary">
-                        圆桌空间中，你（“我”）是特殊角色：可以发言、暂停生成、清空讨论、通过系统提示词进行纠偏。
+                        圆桌空间中，你（"我"）是特殊角色：可以发言、暂停生成、清空讨论、通过系统提示词进行纠偏。
                       </Text>
                     </Space>
                   </Card>
@@ -1019,13 +1086,84 @@ const Home = () => {
               </Row>
             )}
 
+            {/* 灵魂配置编辑弹窗 */}
+            <Modal
+              title={<Space><span>🧬 灵魂配置</span><Tag color="blue">{editingSoulConfigRole?.name}</Tag></Space>}
+              open={!!editingSoulConfigRole}
+              onCancel={() => setEditingSoulConfigRole(null)}
+              footer={
+                <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+                  <Button onClick={() => setEditingSoulConfigRole(null)}>取消</Button>
+                  <Button 
+                    type="primary" 
+                    onClick={() => {
+                      if (editingSoulConfigRole) {
+                        setRoles((prev) =>
+                          prev.map((r) =>
+                            r.id === editingSoulConfigRole.id ? { ...r, soulConfig: editingSoulConfigText } : r)
+                        );
+                        message.success('灵魂配置已更新');
+                        setEditingSoulConfigRole(null);
+                      }
+                    }}
+                  >
+                    保存配置
+                  </Button>
+                </Space>
+              }
+              width={700}
+            >
+              <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+                请输入角色的完整灵魂配置提示词，定义角色的性格、偏好、表达风格等
+              </Text>
+              <Input.TextArea
+                rows={20}
+                value={editingSoulConfigText}
+                onChange={(e) => setEditingSoulConfigText(e.target.value)}
+                placeholder="【角色名称】
+
+1. 灵魂内核
+- 信条：...
+- 性格：...
+- 使命：...
+- 底色：...
+
+2. 认知偏见与偏好
+- 偏好：...
+- 反感：...
+- 观点：...
+
+3. 专家领域
+- 专长：...
+- 领地：...
+
+4. 边界与抗拒
+- 抗拒：...
+- 红线：...
+
+5. 表达风格
+- 风格：...
+- 语气：..."
+              />
+            </Modal>
+
             {step === 'roundtable_view' && (
-              <Row gutter={16}>
-                <Col xs={24} xl={15}>
-                  <Card title="圆桌空间（群聊）" style={{ borderRadius: 8 }}>
+              <Row gutter={16} style={{ height: '100%', overflow: 'hidden' }}>
+                {/* 左侧：对话流 */}
+                <Col xs={24} xl={17} style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%', overflow: 'hidden' }}>
+                  <Card
+                    title={
+                      <Space>
+                        <span>圆桌空间</span>
+                        <Tag>{messages.length}</Tag>
+                      </Space>
+                    }
+                    style={{ borderRadius: 8, flex: 1, display: 'flex', flexDirection: 'column' }}
+                    bodyStyle={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+                  >
                     {!roomReady && <Empty description="请先完成意图洞察与角色确认" />}
                     {roomReady && (
-                      <div style={{ height: 520, overflowY: 'auto' }}>
+                      <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 16px' }}>
                         {messages.length === 0 && <Empty description="暂无讨论内容，先在底部输入并发送" />}
                         <List
                           dataSource={messages}
@@ -1037,14 +1175,15 @@ const Home = () => {
                                 padding: '8px 0',
                               }}
                             >
-                              <Space align="start">
+                              <Space align="start" style={{ width: '100%', maxWidth: '100%' }}>
                                 {item.speakerType !== 'user' && (
                                   <Avatar style={{ background: '#52c41a' }}>{item.speakerName.slice(0, 1)}</Avatar>
                                 )}
                                 <Card
                                   size="small"
                                   style={{
-                                    maxWidth: 820,
+                                    maxWidth: '100%',
+                                    width: '100%',
                                     borderRadius: 10,
                                     border: item.speakerType === 'user' ? '1px solid #1677ff' : '1px solid #f0f0f0',
                                     background: item.speakerType === 'user' ? '#e6f4ff' : '#ffffff',
@@ -1071,50 +1210,52 @@ const Home = () => {
                     )}
                   </Card>
                 </Col>
-                <Col xs={24} xl={9}>
-                  <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                    <Card title="共识画布" style={{ borderRadius: 8 }}>
-                      <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                        <Card size="small">
-                          <Text strong>需求锚点</Text>
-                          <Paragraph style={{ marginBottom: 0 }}>{intentCard.coreGoal || '-'}</Paragraph>
-                        </Card>
-                        <Card size="small">
-                          <Tag color="green">已达成共识</Tag>
-                          <List
-                            size="small"
-                            dataSource={canvasConsensus}
-                            locale={{ emptyText: '暂无共识' }}
-                            renderItem={(text) => (
-                              <List.Item style={{ border: 'none', padding: '2px 0' }}>
-                                <Badge color="#52C41A" text={text} />
-                              </List.Item>
-                            )}
-                          />
-                        </Card>
-                        <Card size="small">
-                          <Tag color="gold">遗留争议</Tag>
-                          <List
-                            size="small"
-                            dataSource={canvasDisputes}
-                            locale={{ emptyText: '暂无争议' }}
-                            renderItem={(text) => (
-                              <List.Item style={{ border: 'none', padding: '2px 0' }}>
-                                <Badge color="#FAAD14" text={text} />
-                              </List.Item>
-                            )}
-                          />
-                        </Card>
-                        <Text type="secondary">更新时间：{canvasUpdatedAt || '-'}</Text>
-                      </Space>
-                    </Card>
 
-                    <Card title="对话控制（用户特殊角色）" style={{ borderRadius: 8 }}>
-                      <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                          <Text>群聊模式</Text>
-                          <Switch checked={autoBrainstorm} onChange={(v) => setAutoBrainstorm(v)} />
+                {/* 右侧：共识摘要 + 对话控制（占30%） */}
+                <Col xs={24} xl={7} style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%', overflow: 'hidden' }}>
+                  {/* 共识摘要 */}
+                  <Card title="共识摘要" style={{ borderRadius: 8, flex: 1, overflow: 'hidden' }}>
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Card size="small">
+                        <Text strong>需求锚点</Text>
+                        <Paragraph style={{ marginBottom: 0 }}>{intentCard.coreGoal || '-'}</Paragraph>
+                      </Card>
+                      <Card size="small" style={{ background: '#f6ffed', borderColor: '#b7eb8f' }}>
+                        <Space>
+                          <Tag color="green">已达成共识</Tag>
+                          <Text type="secondary">({canvasConsensus.length} 项)</Text>
                         </Space>
+                        <List
+                          size="small"
+                          dataSource={canvasConsensus}
+                          locale={{ emptyText: '暂无共识' }}
+                          renderItem={(text) => <List.Item style={{ border: 'none', padding: '4px 0' }}>{text}</List.Item>}
+                        />
+                      </Card>
+                      <Card size="small" style={{ background: '#fffbe6', borderColor: '#ffe58f' }}>
+                        <Space>
+                          <Tag color="gold">遗留争议</Tag>
+                          <Text type="secondary">({canvasDisputes.length} 项)</Text>
+                        </Space>
+                        <List
+                          size="small"
+                          dataSource={canvasDisputes}
+                          locale={{ emptyText: '暂无争议' }}
+                          renderItem={(text) => <List.Item style={{ border: 'none', padding: '4px 0' }}>{text}</List.Item>}
+                        />
+                      </Card>
+                      <Text type="secondary">更新时间：{canvasUpdatedAt || '-'}</Text>
+                    </Space>
+                  </Card>
+
+                  {/* 对话控制 */}
+                  <Card title="对话控制" style={{ borderRadius: 8 }}>
+                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                        <Text>群聊模式</Text>
+                        <Switch checked={autoBrainstorm} onChange={(v) => setAutoBrainstorm(v)} />
+                      </Space>
+                      <Space wrap>
                         <Button type="primary" disabled={!roomReady || sending || messages.length === 0} onClick={generateFinalPlan}>
                           生成最终方案
                         </Button>
@@ -1133,15 +1274,61 @@ const Home = () => {
                           停止生成
                         </Button>
                       </Space>
-                    </Card>
-                  </Space>
+                    </Space>
+                  </Card>
                 </Col>
               </Row>
+            )}
+
+            {/* 创意画布独立页面 */}
+            {step === 'canvas_view' && (
+              <div style={{ padding: 16 }}>
+                <Card
+                  title={
+                    <Space>
+                      <span>创意画布</span>
+                      <Tag color="blue">实时</Tag>
+                    </Space>
+                  }
+                  style={{ borderRadius: 8, minHeight: 'calc(100dvh - 64px - 80px)' }}
+                >
+                  <RoundtableCanvas
+                    key={roomId || 'default'}
+                    roomId={roomId}
+                    intentAnchor={intentCard.coreGoal}
+                    messages={messages}
+                    roles={roles}
+                    canvasConsensus={canvasConsensus}
+                    canvasDisputes={canvasDisputes}
+                    canvasUpdatedAt={canvasUpdatedAt}
+                    onConsensusChange={setCanvasConsensus}
+                    onDisputesChange={setCanvasDisputes}
+                    onUpdatedAtChange={setCanvasUpdatedAt}
+                  />
+                </Card>
+              </div>
             )}
           </Content>
 
           <Footer style={{ background: '#ffffff', borderTop: '1px solid #f0f0f0' }}>
-            {step !== 'roundtable' && (
+            {/* 创意画布页面不显示底部内容 */}
+            {step === 'canvas_view' && (
+              <Row justify="space-between" align="middle">
+                <Col>
+                  <Text type="secondary">
+                    创意画布模式 - 仅展示讨论共识，可从圆桌空间发送内容到画布
+                  </Text>
+                </Col>
+                <Col>
+                  <Space>
+                    <Tag color={intentReady ? 'green' : 'default'}>意图洞察 {intentReady ? '已完成' : '未完成'}</Tag>
+                    <Tag color={rolesReady ? 'green' : 'default'}>角色矩阵 {rolesReady ? '已完成' : '未完成'}</Tag>
+                  </Space>
+                </Col>
+              </Row>
+            )}
+            {/* 圆桌空间和查看模式显示状态标签 */}
+            {step !== 'roundtable' && step !== 'canvas_view' && (
               <Row justify="space-between" align="middle">
                 <Col>
                   <Text type="secondary">
@@ -1156,7 +1343,8 @@ const Home = () => {
                 </Col>
               </Row>
             )}
-            {step === 'roundtable_view' && (
+            {/* 圆桌空间和查看模式显示输入框 */}
+            {(step === 'roundtable_view') && (
               <Row gutter={12} align="middle">
                 <Col flex="auto">
                   <Input.TextArea

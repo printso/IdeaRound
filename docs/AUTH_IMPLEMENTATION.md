@@ -330,7 +330,7 @@ npm run build
 
 # 4. 启动服务
 # 后端
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 15001
 
 # 前端（使用 PM2 或其他进程管理器）
 pm2 serve dist/ 80 --spa

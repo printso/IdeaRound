@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     # 基础配置
     DATABASE_URL: str = "sqlite+aiosqlite:///./idearound.db"
     SERVER_HOST: str = "0.0.0.0"
-    SERVER_PORT: int = 8000
+    SERVER_PORT: int = 15001
     SERVER_RELOAD: bool = True
     PROMPT_BASE_PATH: str = "configs/prompts"
     

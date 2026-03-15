@@ -137,14 +137,6 @@ const ModelManagement: React.FC = () => {
     }
   };
 
-  const openChatDrawer = (record: LLMConfig) => {
-    setChatTarget(record);
-    setChatMarkdown('');
-    setChatPrompt('');
-    setChatSystemPrompt('');
-    setChatDrawerVisible(true);
-  };
-
   const handleStreamChat = async () => {
     if (!chatTarget || !chatPrompt.trim()) {
       message.warning('请输入测试消息');
@@ -273,7 +265,10 @@ const ModelManagement: React.FC = () => {
         title={`流式对话测试：${chatTarget?.name ?? ''}`}
         width={720}
         open={chatDrawerVisible}
-        onClose={() => setChatDrawerVisible(false)}
+        onClose={() => {
+          setChatDrawerVisible(false);
+          setChatTarget(null);
+        }}
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Input.TextArea

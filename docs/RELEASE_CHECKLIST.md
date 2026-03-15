@@ -161,7 +161,7 @@ start.bat
 
 - [部署指南](README.md#部署指南)
 - [认证系统实现](docs/AUTH_IMPLEMENTATION.md)
-- [API 文档](http://localhost:8000/docs)
+- [API 文档](http://localhost:15001/docs)
 
 ## ⚠️ 重要提示
 
@@ -218,7 +218,7 @@ python init_db.py
 python init_auth.py
 
 # 5. 启动后端服务（使用 systemd 或 supervisor）
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 15001
 
 # 6. 安装前端依赖并构建
 cd ../frontend
@@ -244,7 +244,7 @@ server {
 
     # 后端 API
     location /api/ {
-        proxy_pass http://localhost:8000;
+        proxy_pass http://localhost:15001;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

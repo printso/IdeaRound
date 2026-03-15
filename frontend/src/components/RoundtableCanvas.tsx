@@ -1,0 +1,1132 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import {
+  Background,
+  Controls,
+  Handle,
+  MiniMap,
+  Position,
+  ReactFlow,
+  addEdge,
+  applyEdgeChanges,
+  applyNodeChanges,
+  type Connection,
+  type Edge,
+  type EdgeChange,
+  type Node,
+  type NodeChange,
+  type NodeProps,
+  type OnConnect,
+  type ReactFlowInstance,
+  type Viewport,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import { Button, Card, Divider, Input, List, Select, Space, Tag, Typography, message } from 'antd';
+import { DownloadOutlined, RedoOutlined, SaveOutlined, UndoOutlined } from '@ant-design/icons';
+import { toPng } from 'html-to-image';
+
+const { Text, Title } = Typography;
+
+type NodeKind = 'anchor' | 'expert' | 'relation' | 'milestone' | 'cognitive' | 'sandbox' | 'consensus';
+type NodeStatus = 'todo' | 'doing' | 'done';
+type ConsensusDecision = 'pending' | 'consensus' | 'dispute';
+type ExpertStance = 'positive' | 'negative' | 'neutral' | 'review';
+
+type CanvasNodeData = {
+  title: string;
+  content: string;
+  owner: string;
+  status: NodeStatus;
+  decision: ConsensusDecision;
+  nodeKind: NodeKind;
+  // 专家观点扩展
+  expertRole?: string;
+  expertAvatar?: string;
+  expertStance?: ExpertStance;
+  originalMessageId?: string;
+  thoughtChain?: string;
+  // 语义压缩后的摘要
+  summary?: string;
+};
+
+type CanvasEdgeData = {
+  label: string;
+  relation: string;
+};
+
+type CanvasSnapshot = {
+  nodes: Node<CanvasNodeData>[];
+  edges: Edge<CanvasEdgeData>[];
+  viewport: Viewport;
+  updatedAt: string;
+};
+
+type BroadcastMessage = {
+  senderId: string;
+  snapshot: CanvasSnapshot;
+};
+
+type MessageItem = {
+  id: string;
+  speakerId: string;
+  speakerName: string;
+  speakerType: 'user' | 'agent';
+  content: string;
+  streaming?: boolean;
+  createdAt: string;
+};
+
+type RoleMember = {
+  id: string;
+  name: string;
+  stance: '建设' | '对抗' | '中立' | '评审';
+  desc: string;
+  selected: boolean;
+};
+
+type RoundtableCanvasProps = {
+  roomId: string;
+  intentAnchor: string;
+  messages?: MessageItem[];
+  roles?: RoleMember[];
+  canvasConsensus?: string[];
+  canvasDisputes?: string[];
+  canvasUpdatedAt?: string;
+  onConsensusChange?: (items: string[]) => void;
+  onDisputesChange?: (items: string[]) => void;
+  onUpdatedAtChange?: (text: string) => void;
+};
+
+// 四大核心视觉模块元数据
+const NODE_KIND_META: Record<NodeKind, { label: string; color: string; defaultContent: string; shape: string }> = {
+  anchor: {
+    label: '核心意图锚点',
+    color: '#1677ff',
+    defaultContent: '显示由意图探针生成的结构化意图卡片',
+    shape: 'hexagon',
+  },
+  expert: {
+    label: '专家观点',
+    color: '#722ed1',
+    defaultContent: '显示各角色的核心论点摘要',
+    shape: 'rectangle',
+  },
+  relation: {
+    label: '冲突与关联',
+    color: '#d46b08',
+    defaultContent: '显示观点之间的关系',
+    shape: 'line',
+  },
+  milestone: {
+    label: '共识里程碑',
+    color: '#389e0d',
+    defaultContent: '圆桌讨论后达成的确定性结论',
+    shape: 'circle',
+  },
+  // 兼容旧类型
+  cognitive: {
+    label: '认知增强',
+    color: '#1677ff',
+    defaultContent: '拆解问题边界、补充视角、给出深度追问',
+    shape: 'hexagon',
+  },
+  sandbox: {
+    label: '沙盘推演',
+    color: '#722ed1',
+    defaultContent: '假设场景A/B/C，比较关键变量与结果分布',
+    shape: 'rectangle',
+  },
+  consensus: {
+    label: '共识',
+    color: '#389e0d',
+    defaultContent: '聚合观点，标记已共识与遗留争议',
+    shape: 'circle',
+  },
+};
+
+// 立场颜色映射
+const STANCE_COLORS: Record<ExpertStance, string> = {
+  positive: '#52c41a',  // 绿色 - 建设性
+  negative: '#ff4d4f',  // 红色 - 对抗性
+  neutral: '#1890ff',   // 蓝色 - 中立
+  review: '#faad14',    // 黄色 - 评审
+};
+
+const STATUS_OPTIONS: { label: string; value: NodeStatus }[] = [
+  { label: '待处理', value: 'todo' },
+  { label: '进行中', value: 'doing' },
+  { label: '已完成', value: 'done' },
+];
+
+const DECISION_OPTIONS: { label: string; value: ConsensusDecision }[] = [
+  { label: '待定', value: 'pending' },
+  { label: '达成共识', value: 'consensus' },
+  { label: '存在争议', value: 'dispute' },
+];
+
+const RELATION_OPTIONS = ['支持', '补充', '冲突', '前置依赖', '因果影响'];
+
+const getNowText = () => new Date().toLocaleString();
+
+const createId = (prefix: string) => `${prefix}_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
+
+const serializeGraph = (nodes: Node<CanvasNodeData>[], edges: Edge<CanvasEdgeData>[]) =>
+  JSON.stringify({
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      position: node.position,
+      data: node.data,
+      selected: Boolean(node.selected),
+    })),
+    edges: edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle ?? null,
+      targetHandle: edge.targetHandle ?? null,
+      data: edge.data,
+      label: edge.label,
+      selected: Boolean(edge.selected),
+    })),
+  });
+
+const buildNode = (kind: NodeKind, position: { x: number; y: number }, seed?: Partial<CanvasNodeData>): Node<CanvasNodeData> => ({
+  id: createId(kind),
+  type: 'roundtableNode',
+  position,
+  data: {
+    title: seed?.title ?? NODE_KIND_META[kind].label,
+    content: seed?.content ?? NODE_KIND_META[kind].defaultContent,
+    owner: seed?.owner ?? '协作组',
+    status: seed?.status ?? 'todo',
+    decision: seed?.decision ?? 'pending',
+    nodeKind: kind,
+  },
+});
+
+// 构建四大核心视觉模块的初始节点
+const buildStarterNodes = (intentAnchor: string): Node<CanvasNodeData>[] => {
+  const anchor = intentAnchor.trim() || '目标待补充';
+  return [
+    // 1. 核心意图锚点 - 位于顶部
+    buildNode('anchor', { x: 280, y: 30 }, {
+      title: '核心意图锚点',
+      content: anchor,
+      status: 'done',
+    }),
+    // 2. 专家观点分支 - 左侧
+    buildNode('expert', { x: 30, y: 180 }, {
+      title: '专家观点区域',
+      content: '等待圆桌讨论生成专家观点节点',
+      status: 'todo',
+    }),
+    // 3. 冲突与关联线 - 中间
+    buildNode('relation', { x: 280, y: 180 }, {
+      title: '观点关系网络',
+      content: '显示观点之间的反驳、补充、派生关系',
+      status: 'todo',
+    }),
+    // 4. 共识里程碑 - 底部
+    buildNode('milestone', { x: 280, y: 350 }, {
+      title: '决策收敛',
+      content: '已达成共识的结论',
+      decision: 'pending',
+      status: 'todo',
+    }),
+  ];
+};
+
+const createInitialSnapshot = (storageKey: string, intentAnchor: string): CanvasSnapshot => {
+  const saved = localStorage.getItem(storageKey);
+  if (saved) {
+    try {
+      return JSON.parse(saved) as CanvasSnapshot;
+    } catch {
+      const starterNodes = buildStarterNodes(intentAnchor);
+      return {
+        nodes: starterNodes,
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+        updatedAt: getNowText(),
+      };
+    }
+  }
+  const starterNodes = buildStarterNodes(intentAnchor);
+  const starterSnapshot: CanvasSnapshot = {
+    nodes: starterNodes,
+    edges: [],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    updatedAt: getNowText(),
+  };
+  localStorage.setItem(storageKey, JSON.stringify(starterSnapshot));
+  return starterSnapshot;
+};
+
+const downloadData = (dataUrl: string, name: string) => {
+  const link = document.createElement('a');
+  link.href = dataUrl;
+  link.download = name;
+  link.click();
+};
+
+// 专家观点节点 - 矩形带头像和立场色
+const ExpertNodeCard = ({ data, selected }: NodeProps<Node<CanvasNodeData>>) => {
+  const meta = NODE_KIND_META.expert;
+  const stanceColor = data.expertStance ? STANCE_COLORS[data.expertStance] : meta.color;
+  const statusColor = data.status === 'done' ? 'green' : data.status === 'doing' ? 'processing' : 'default';
+
+  // 压缩内容为摘要
+  const summary = data.summary || compressText(data.content, 20);
+
+  return (
+    <div
+      style={{
+        width: 200,
+        borderRadius: 8,
+        border: selected ? `2px solid ${stanceColor}` : `2px solid ${stanceColor}`,
+        background: '#fff',
+        boxShadow: selected ? `0 0 8px ${stanceColor}40` : '0 2px 6px rgba(0,0,0,0.1)',
+      }}
+    >
+      <Handle type="target" position={Position.Left} />
+      {/* 头部：角色头像 + 立场色条 */}
+      <div
+        style={{
+          background: `${stanceColor}15`,
+          padding: '6px 10px',
+          borderBottom: `2px solid ${stanceColor}`,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}
+      >
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: '50%',
+            background: stanceColor,
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 12,
+            fontWeight: 'bold',
+          }}
+        >
+          {data.expertRole?.slice(0, 1) || '专'}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Text strong style={{ fontSize: 13, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {data.expertRole || data.title}
+          </Text>
+          <Tag color={stanceColor} style={{ fontSize: 10, padding: '0 4px', margin: 0 }}>
+            {data.expertStance === 'positive' ? '建设' : data.expertStance === 'negative' ? '对抗' : data.expertStance === 'review' ? '评审' : '中立'}
+          </Tag>
+        </div>
+      </div>
+      {/* 内容：语义压缩后的摘要 */}
+      <div style={{ padding: 10 }}>
+        <Text style={{ fontSize: 13, lineHeight: 1.5 }}>{summary}</Text>
+      </div>
+      {/* 底部：状态 */}
+      <div style={{ padding: '6px 10px', borderTop: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between' }}>
+        <Tag color={statusColor} style={{ fontSize: 10, margin: 0 }}>
+          {STATUS_OPTIONS.find((item) => item.value === data.status)?.label}
+        </Tag>
+      </div>
+      <Handle type="source" position={Position.Right} />
+      <Handle type="source" position={Position.Bottom} id="bottom" />
+      <Handle type="target" position={Position.Top} id="top" />
+    </div>
+  );
+};
+
+// 核心意图锚点 - 六边形
+const AnchorNodeCard = ({ data, selected }: NodeProps<Node<CanvasNodeData>>) => {
+  const meta = NODE_KIND_META.anchor;
+  return (
+    <div
+      style={{
+        width: 240,
+        borderRadius: 12,
+        border: selected ? `3px solid ${meta.color}` : `2px solid ${meta.color}`,
+        background: `linear-gradient(135deg, ${meta.color}10, ${meta.color}05)`,
+        boxShadow: selected ? `0 0 12px ${meta.color}30` : '0 4px 12px rgba(0,0,0,0.08)',
+      }}
+    >
+      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+      <div style={{ padding: 14, textAlign: 'center' }}>
+        <Tag color={meta.color} style={{ marginBottom: 8 }}>🎯 {meta.label}</Tag>
+        <div style={{ background: '#fff', borderRadius: 8, padding: 10, marginTop: 8 }}>
+          <Text strong style={{ fontSize: 14, color: meta.color }}>{data.title}</Text>
+          <Text type="secondary" style={{ display: 'block', fontSize: 13, marginTop: 6 }}>
+            {compressText(data.content, 40)}
+          </Text>
+        </div>
+      </div>
+      <Handle type="source" position={Position.Right} />
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  );
+};
+
+// 共识里程碑 - 圆形
+const MilestoneNodeCard = ({ data, selected }: NodeProps<Node<CanvasNodeData>>) => {
+  const decisionColor = data.decision === 'consensus' ? '#52c41a' : data.decision === 'dispute' ? '#faad14' : '#d9d9d9';
+  const isResolved = data.decision === 'consensus';
+
+  return (
+    <div
+      style={{
+        width: 200,
+        height: 100,
+        borderRadius: 50,
+        border: selected ? `3px solid ${decisionColor}` : `2px solid ${decisionColor}`,
+        background: isResolved ? `linear-gradient(135deg, ${decisionColor}20, ${decisionColor}10)` : '#fff',
+        boxShadow: selected ? `0 0 12px ${decisionColor}40` : '0 4px 12px rgba(0,0,0,0.08)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <Handle type="target" position={Position.Top} />
+      <div style={{ textAlign: 'center', padding: 10 }}>
+        <Tag color={decisionColor} style={{ marginBottom: 4 }}>
+          {isResolved ? '✓ 共识' : data.decision === 'dispute' ? '⚠ 争议' : '○ 待定'}
+        </Tag>
+        <Text strong style={{ display: 'block', fontSize: 13 }}>{compressText(data.title, 25)}</Text>
+      </div>
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  );
+};
+
+// 关系节点 - 带标签的连线
+const RelationNodeCard = ({ data, selected }: NodeProps<Node<CanvasNodeData>>) => {
+  const meta = NODE_KIND_META.relation;
+  return (
+    <div
+      style={{
+        width: 180,
+        borderRadius: 20,
+        border: selected ? `2px dashed ${meta.color}` : `1px dashed ${meta.color}`,
+        background: `${meta.color}10`,
+        boxShadow: 'none',
+      }}
+    >
+      <Handle type="target" position={Position.Left} />
+      <div style={{ padding: '8px 12px', textAlign: 'center' }}>
+        <Text strong style={{ fontSize: 12, color: meta.color }}>{data.title}</Text>
+        <Text type="secondary" style={{ display: 'block', fontSize: 11 }}>
+          {compressText(data.content, 30)}
+        </Text>
+      </div>
+      <Handle type="source" position={Position.Right} />
+    </div>
+  );
+};
+
+// 默认节点卡片
+const RoundtableNodeCard = ({ data, selected }: NodeProps<Node<CanvasNodeData>>) => {
+  const meta = NODE_KIND_META[data.nodeKind] || NODE_KIND_META.cognitive;
+  const statusColor = data.status === 'done' ? 'green' : data.status === 'doing' ? 'processing' : 'default';
+  const decisionColor = data.decision === 'consensus' ? 'green' : data.decision === 'dispute' ? 'gold' : 'default';
+
+  return (
+    <div
+      style={{
+        width: 220,
+        borderRadius: 10,
+        border: selected ? `2px solid ${meta.color}` : '1px solid #d9d9d9',
+        background: '#fff',
+        boxShadow: selected ? `0 0 0 2px ${meta.color}20` : '0 1px 3px rgba(0,0,0,0.08)',
+      }}
+    >
+      <Handle type="target" position={Position.Left} />
+      <div style={{ padding: 10 }}>
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Tag color={meta.color} style={{ fontSize: 11 }}>{meta.label}</Tag>
+            <Tag color={statusColor} style={{ fontSize: 10 }}>{STATUS_OPTIONS.find((item) => item.value === data.status)?.label}</Tag>
+          </Space>
+          <Text strong style={{ fontSize: 13 }}>{data.title}</Text>
+          <Text type="secondary" style={{ fontSize: 11, whiteSpace: 'pre-wrap' }}>
+            {compressText(data.content, 50)}
+          </Text>
+          {data.nodeKind === 'consensus' && (
+            <Tag color={decisionColor}>{DECISION_OPTIONS.find((item) => item.value === data.decision)?.label}</Tag>
+          )}
+        </Space>
+      </div>
+      <Handle type="source" position={Position.Right} />
+      <Handle type="source" position={Position.Bottom} id="bottom" />
+      <Handle type="target" position={Position.Top} id="top" />
+    </div>
+  );
+};
+
+const nodeTypes = {
+  roundtableNode: RoundtableNodeCard,
+  expert: ExpertNodeCard,
+  anchor: AnchorNodeCard,
+  milestone: MilestoneNodeCard,
+  relation: RelationNodeCard,
+};
+
+// 语义压缩函数：将长文本压缩为20字以内的摘要
+const compressText = (text: string, maxLength: number = 20): string => {
+  if (!text) return '';
+  // 移除 markdown 格式
+  const cleanText = text.replace(/[#*`[\]()]/g, '').replace(/\n+/g, ' ').trim();
+  if (cleanText.length <= maxLength) return cleanText;
+  return cleanText.slice(0, maxLength - 1) + '…';
+};
+
+// 根据角色立场获取颜色
+const getStanceColor = (stance: string): ExpertStance => {
+  switch (stance) {
+    case '建设':
+      return 'positive';
+    case '对抗':
+      return 'negative';
+    case '评审':
+      return 'review';
+    default:
+      return 'neutral';
+  }
+};
+
+const RoundtableCanvas = ({
+  roomId,
+  intentAnchor,
+  messages = [],
+  roles = [],
+  canvasConsensus = [],
+  canvasDisputes = [],
+  canvasUpdatedAt = '',
+  onConsensusChange,
+  onDisputesChange,
+  onUpdatedAtChange,
+}: RoundtableCanvasProps) => {
+  const storageKey = useMemo(() => `idearound_roundtable_canvas_${roomId || 'default'}`, [roomId]);
+  const [initialSnapshot] = useState<CanvasSnapshot>(() => createInitialSnapshot(storageKey, intentAnchor));
+  const clientIdRef = useRef(createId('client'));
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
+  const reactFlowRef = useRef<ReactFlowInstance<Node<CanvasNodeData>, Edge<CanvasEdgeData>> | null>(null);
+  const viewportRef = useRef<Viewport>(initialSnapshot.viewport);
+  const syncLockRef = useRef(false);
+  const nodesRef = useRef<Node<CanvasNodeData>[]>(initialSnapshot.nodes);
+  const edgesRef = useRef<Edge<CanvasEdgeData>[]>(initialSnapshot.edges);
+
+  const [nodes, setNodes] = useState<Node<CanvasNodeData>[]>(initialSnapshot.nodes);
+  const [edges, setEdges] = useState<Edge<CanvasEdgeData>[]>(initialSnapshot.edges);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [historyPast, setHistoryPast] = useState<CanvasSnapshot[]>([]);
+  const [historyFuture, setHistoryFuture] = useState<CanvasSnapshot[]>([]);
+
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
+  useEffect(() => {
+    edgesRef.current = edges;
+  }, [edges]);
+
+  useEffect(() => {
+    onUpdatedAtChange?.(initialSnapshot.updatedAt);
+  }, [initialSnapshot.updatedAt, onUpdatedAtChange]);
+
+  const getSnapshot = useCallback(
+    (nextNodes?: Node<CanvasNodeData>[], nextEdges?: Edge<CanvasEdgeData>[], nextViewport?: Viewport): CanvasSnapshot => ({
+      nodes: nextNodes ?? nodesRef.current,
+      edges: nextEdges ?? edgesRef.current,
+      viewport: nextViewport ?? viewportRef.current,
+      updatedAt: getNowText(),
+    }),
+    [],
+  );
+
+  const persistSnapshot = useCallback(
+    (snapshot: CanvasSnapshot) => {
+      localStorage.setItem(storageKey, JSON.stringify(snapshot));
+      onUpdatedAtChange?.(snapshot.updatedAt);
+    },
+    [onUpdatedAtChange, storageKey],
+  );
+
+  const broadcastSnapshot = useCallback((snapshot: CanvasSnapshot) => {
+    if (!channelRef.current) {
+      return;
+    }
+    const msg: BroadcastMessage = {
+      senderId: clientIdRef.current,
+      snapshot,
+    };
+    channelRef.current.postMessage(msg);
+  }, []);
+
+  const commitGraph = useCallback(
+    (
+      nextNodes: Node<CanvasNodeData>[],
+      nextEdges: Edge<CanvasEdgeData>[],
+      options?: { recordHistory?: boolean; broadcast?: boolean; resetFuture?: boolean },
+    ) => {
+      const prevNodes = nodesRef.current;
+      const prevEdges = edgesRef.current;
+      if (serializeGraph(prevNodes, prevEdges) === serializeGraph(nextNodes, nextEdges)) {
+        return;
+      }
+
+      if (options?.recordHistory !== false) {
+        const prevSnapshot = getSnapshot(prevNodes, prevEdges);
+        setHistoryPast((prev) => [...prev.slice(-59), prevSnapshot]);
+      }
+      if (options?.resetFuture !== false) {
+        setHistoryFuture([]);
+      }
+
+      setNodes(nextNodes);
+      setEdges(nextEdges);
+      nodesRef.current = nextNodes;
+      edgesRef.current = nextEdges;
+
+      const snapshot = getSnapshot(nextNodes, nextEdges);
+      persistSnapshot(snapshot);
+
+      if (options?.broadcast !== false && !syncLockRef.current) {
+        broadcastSnapshot(snapshot);
+      }
+    },
+    [broadcastSnapshot, getSnapshot, persistSnapshot],
+  );
+
+  const restoreSnapshot = useCallback(
+    (snapshot: CanvasSnapshot, options?: { pushCurrentToFuture?: boolean; broadcast?: boolean }) => {
+      const currentSnapshot = getSnapshot();
+      if (options?.pushCurrentToFuture) {
+        setHistoryFuture((prev) => [...prev.slice(-59), currentSnapshot]);
+      }
+      setNodes(snapshot.nodes);
+      setEdges(snapshot.edges);
+      nodesRef.current = snapshot.nodes;
+      edgesRef.current = snapshot.edges;
+      viewportRef.current = snapshot.viewport;
+      persistSnapshot({ ...snapshot, updatedAt: getNowText() });
+      reactFlowRef.current?.setViewport(snapshot.viewport, { duration: 150 });
+      if (options?.broadcast !== false && !syncLockRef.current) {
+        broadcastSnapshot({ ...snapshot, updatedAt: getNowText() });
+      }
+    },
+    [broadcastSnapshot, getSnapshot, persistSnapshot],
+  );
+
+  useEffect(() => {
+    if (!messages || messages.length === 0) {
+      return;
+    }
+    const existingExpertIds = new Set(
+      nodesRef.current.filter((node) => node.data.nodeKind === 'expert').map((node) => node.data.originalMessageId),
+    );
+    const newExpertNodes: Node<CanvasNodeData>[] = [];
+    messages.forEach((msg) => {
+      if (msg.speakerType === 'agent' && !existingExpertIds.has(msg.id) && msg.content.trim()) {
+        const role = roles?.find((item) => item.id === msg.speakerId);
+        const stance = role ? getStanceColor(role.stance) : 'neutral';
+        newExpertNodes.push({
+          id: createId('expert'),
+          type: 'expert',
+          position: {
+            x: 30 + Math.random() * 300,
+            y: 180 + newExpertNodes.length * 120,
+          },
+          data: {
+            title: role?.name || msg.speakerName,
+            content: msg.content,
+            owner: role?.name || msg.speakerName,
+            status: 'done',
+            decision: 'pending',
+            nodeKind: 'expert',
+            expertRole: role?.name || msg.speakerName,
+            expertAvatar: (role?.name || msg.speakerName).slice(0, 1),
+            expertStance: stance,
+            originalMessageId: msg.id,
+            summary: compressText(msg.content, 20),
+          },
+        });
+      }
+    });
+    if (newExpertNodes.length > 0) {
+      commitGraph([...nodesRef.current, ...newExpertNodes], edgesRef.current, { recordHistory: false, broadcast: true });
+    }
+  }, [commitGraph, messages, roles]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') {
+      return;
+    }
+    const channel = new BroadcastChannel(`idearound_canvas_channel_${roomId || 'default'}`);
+    channelRef.current = channel;
+    channel.onmessage = (event: MessageEvent<BroadcastMessage>) => {
+      const data = event.data;
+      if (!data || data.senderId === clientIdRef.current) {
+        return;
+      }
+      syncLockRef.current = true;
+      restoreSnapshot(data.snapshot, { broadcast: false });
+      syncLockRef.current = false;
+      message.info('已同步其他协作者的画布更新');
+    };
+    return () => {
+      channel.close();
+      channelRef.current = null;
+    };
+  }, [restoreSnapshot, roomId]);
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== storageKey || !event.newValue) {
+        return;
+      }
+      try {
+        const snapshot = JSON.parse(event.newValue) as CanvasSnapshot;
+        syncLockRef.current = true;
+        restoreSnapshot(snapshot, { broadcast: false });
+      } catch {
+        syncLockRef.current = false;
+        return;
+      }
+      syncLockRef.current = false;
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [restoreSnapshot, storageKey]);
+
+  const addNodeAtCenter = useCallback((kind: NodeKind) => {
+    const rf = reactFlowRef.current;
+    const center = rf?.screenToFlowPosition({
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+    }) ?? { x: 320, y: 180 };
+    const nextNodes = [...nodesRef.current, buildNode(kind, center)];
+    commitGraph(nextNodes, edgesRef.current);
+  }, [commitGraph]);
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange<Node<CanvasNodeData>>[]) => {
+      const nextNodes = applyNodeChanges(changes, nodesRef.current);
+      commitGraph(nextNodes, edgesRef.current);
+      const selectedNode = nextNodes.find((node) => node.selected);
+      setSelectedNodeId(selectedNode?.id ?? null);
+    },
+    [commitGraph],
+  );
+
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange<Edge<CanvasEdgeData>>[]) => {
+      const nextEdges = applyEdgeChanges(changes, edgesRef.current);
+      commitGraph(nodesRef.current, nextEdges);
+      const selectedEdge = nextEdges.find((edge) => edge.selected);
+      setSelectedEdgeId(selectedEdge?.id ?? null);
+    },
+    [commitGraph],
+  );
+
+  const onConnect: OnConnect = useCallback(
+    (connection: Connection) => {
+      const nextEdges = addEdge<Edge<CanvasEdgeData>>(
+        {
+          ...connection,
+          id: createId('edge'),
+          type: 'smoothstep',
+          markerEnd: { type: 'arrowclosed' },
+          label: '支持',
+          data: { label: '支持', relation: '支持' },
+        },
+        edgesRef.current,
+      );
+      commitGraph(nodesRef.current, nextEdges);
+    },
+    [commitGraph],
+  );
+
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
+    [nodes, selectedNodeId],
+  );
+  const selectedEdge = useMemo(
+    () => edges.find((edge) => edge.id === selectedEdgeId) ?? null,
+    [edges, selectedEdgeId],
+  );
+
+  const updateSelectedNode = useCallback(
+    (patch: Partial<CanvasNodeData>) => {
+      if (!selectedNodeId) {
+        return;
+      }
+      const nextNodes = nodesRef.current.map((node) =>
+        node.id === selectedNodeId
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                ...patch,
+              },
+            }
+          : node,
+      );
+      commitGraph(nextNodes, edgesRef.current);
+    },
+    [commitGraph, selectedNodeId],
+  );
+
+  const updateSelectedEdge = useCallback(
+    (patch: Partial<CanvasEdgeData>) => {
+      if (!selectedEdgeId) {
+        return;
+      }
+      const nextEdges = edgesRef.current.map((edge) => {
+        if (edge.id !== selectedEdgeId) {
+          return edge;
+        }
+        const label = patch.label ?? edge.data?.label ?? edge.label?.toString() ?? '';
+        return {
+          ...edge,
+          data: {
+            label,
+            relation: patch.relation ?? edge.data?.relation ?? '',
+          },
+          label,
+        };
+      });
+      commitGraph(nodesRef.current, nextEdges);
+    },
+    [commitGraph, selectedEdgeId],
+  );
+
+  const removeSelected = useCallback(() => {
+    const nextNodes = nodesRef.current.filter((node) => !node.selected);
+    const selectedNodeIds = new Set(nodesRef.current.filter((node) => node.selected).map((node) => node.id));
+    const nextEdges = edgesRef.current.filter(
+      (edge) => !edge.selected && !selectedNodeIds.has(edge.source) && !selectedNodeIds.has(edge.target),
+    );
+    commitGraph(nextNodes, nextEdges);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+  }, [commitGraph]);
+
+  const undo = useCallback(() => {
+    if (historyPast.length === 0) {
+      return;
+    }
+    const target = historyPast[historyPast.length - 1];
+    const current = getSnapshot();
+    setHistoryPast((prev) => prev.slice(0, -1));
+    setHistoryFuture((prev) => [...prev.slice(-59), current]);
+    restoreSnapshot(target, { broadcast: true });
+  }, [getSnapshot, historyPast, restoreSnapshot]);
+
+  const redo = useCallback(() => {
+    if (historyFuture.length === 0) {
+      return;
+    }
+    const target = historyFuture[historyFuture.length - 1];
+    const current = getSnapshot();
+    setHistoryFuture((prev) => prev.slice(0, -1));
+    setHistoryPast((prev) => [...prev.slice(-59), current]);
+    restoreSnapshot(target, { broadcast: true });
+  }, [getSnapshot, historyFuture, restoreSnapshot]);
+
+  const exportPng = useCallback(async () => {
+    if (!canvasWrapperRef.current) {
+      return;
+    }
+    const dataUrl = await toPng(canvasWrapperRef.current, {
+      pixelRatio: 2,
+      backgroundColor: '#f7f8fa',
+    });
+    downloadData(dataUrl, `roundtable-canvas-${roomId || 'default'}.png`);
+    message.success('PNG 导出完成');
+  }, [roomId]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isMod = event.ctrlKey || event.metaKey;
+      if (isMod && event.key.toLowerCase() === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        undo();
+      } else if ((isMod && event.key.toLowerCase() === 'y') || (isMod && event.shiftKey && event.key.toLowerCase() === 'z')) {
+        event.preventDefault();
+        redo();
+      } else if (isMod && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        const snapshot = getSnapshot();
+        persistSnapshot(snapshot);
+        broadcastSnapshot(snapshot);
+        message.success('画布已保存');
+      } else if (isMod && event.key.toLowerCase() === 'e') {
+        event.preventDefault();
+        void exportPng();
+      } else if (event.key === 'Delete' || event.key === 'Backspace') {
+        removeSelected();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [broadcastSnapshot, exportPng, getSnapshot, persistSnapshot, redo, removeSelected, undo]);
+
+  useEffect(() => {
+    const consensusItems = nodes
+      .filter((node) => node.data.nodeKind === 'consensus' && node.data.decision === 'consensus')
+      .map((node) => node.data.title);
+    const disputeItems = nodes
+      .filter((node) => node.data.nodeKind === 'consensus' && node.data.decision === 'dispute')
+      .map((node) => node.data.title);
+    onConsensusChange?.(consensusItems);
+    onDisputesChange?.(disputeItems);
+  }, [nodes, onConsensusChange, onDisputesChange]);
+
+  const onDragStart = (event: DragEvent<HTMLElement>, kind: NodeKind) => {
+    event.dataTransfer.setData('application/idearound-node-kind', kind);
+    event.dataTransfer.effectAllowed = 'move';
+  };
+
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const kind = event.dataTransfer.getData('application/idearound-node-kind') as NodeKind;
+    if (!kind || !NODE_KIND_META[kind]) {
+      return;
+    }
+    const position =
+      reactFlowRef.current?.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      }) ?? { x: 300, y: 200 };
+    const nextNodes = [...nodesRef.current, buildNode(kind, position)];
+    commitGraph(nextNodes, edgesRef.current);
+  };
+
+  const onDragOver = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  };
+
+  // 四大核心模块的节点类型
+  const coreModules: { kind: NodeKind; label: string; color: string; icon: string }[] = [
+    { kind: 'anchor', label: '核心意图锚点', color: '#1677ff', icon: '🎯' },
+    { kind: 'expert', label: '专家观点分支', color: '#722ed1', icon: '👥' },
+    { kind: 'relation', label: '冲突与关联', color: '#d46b08', icon: '🔗' },
+    { kind: 'milestone', label: '共识里程碑', color: '#389e0d', icon: '🏆' },
+  ];
+
+  return (
+    <div style={{ display: 'flex', gap: 12, width: '100%', height: '100%', minHeight: 500 }}>
+      {/* 左侧：工具箱 + 共识摘要 */}
+      <div style={{ width: 200, display: 'flex', flexDirection: 'column', gap: 12, flexShrink: 0 }}>
+        <Card size="small" style={{ flex: 1, overflow: 'auto' }}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Title level={5} style={{ margin: 0 }}>
+              四大核心模块
+            </Title>
+            {coreModules.map((mod) => (
+              <Button
+                key={mod.kind}
+                block
+                draggable
+                onDragStart={(event) => onDragStart(event, mod.kind)}
+                onClick={() => addNodeAtCenter(mod.kind)}
+                style={{
+                  justifyContent: 'flex-start',
+                  borderColor: mod.color,
+                  background: `${mod.color}08`,
+                }}
+              >
+                <Space>
+                  <span>{mod.icon}</span>
+                  <Text style={{ color: mod.color }}>{mod.label}</Text>
+                </Space>
+              </Button>
+            ))}
+            <Divider style={{ margin: '8px 0' }} />
+            <Space wrap style={{ justifyContent: 'center' }}>
+              <Button size="small" icon={<UndoOutlined />} onClick={undo} disabled={historyPast.length === 0} />
+              <Button size="small" icon={<RedoOutlined />} onClick={redo} disabled={historyFuture.length === 0} />
+              <Button size="small" icon={<SaveOutlined />} onClick={() => {
+                const snapshot = getSnapshot();
+                persistSnapshot(snapshot);
+                broadcastSnapshot(snapshot);
+                message.success('已保存');
+              }} />
+              <Button size="small" icon={<DownloadOutlined />} onClick={() => void exportPng()} />
+            </Space>
+            <Text type="secondary" style={{ fontSize: 10 }}>
+              快捷键：Ctrl+Z 撤销，Ctrl+Y 重做
+            </Text>
+          </Space>
+        </Card>
+
+        {/* 共识摘要面板 */}
+        <Card size="small" title="共识摘要" style={{ maxHeight: 200, overflow: 'auto' }}>
+          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+            <Card size="small" style={{ background: '#f6ffed', borderColor: '#b7eb8f' }}>
+              <Text strong style={{ color: '#389e0d' }}>已达成共识</Text>
+              <List
+                size="small"
+                dataSource={canvasConsensus}
+                locale={{ emptyText: '暂无共识' }}
+                renderItem={(text) => (
+                  <List.Item style={{ border: 'none', padding: '2px 0', fontSize: 11 }}>
+                    <Tag color="green">✓</Tag>
+                    <Text style={{ fontSize: 11 }}>{text}</Text>
+                  </List.Item>
+                )}
+              />
+            </Card>
+            <Card size="small" style={{ background: '#fffbe6', borderColor: '#ffe58f' }}>
+              <Text strong style={{ color: '#d48806' }}>遗留争议</Text>
+              <List
+                size="small"
+                dataSource={canvasDisputes}
+                locale={{ emptyText: '暂无争议' }}
+                renderItem={(text) => (
+                  <List.Item style={{ border: 'none', padding: '2px 0', fontSize: 11 }}>
+                    <Tag color="gold">⚠</Tag>
+                    <Text style={{ fontSize: 11 }}>{text}</Text>
+                  </List.Item>
+                )}
+              />
+            </Card>
+            <Text type="secondary" style={{ fontSize: 10 }}>
+              更新于：{canvasUpdatedAt || '-'}
+            </Text>
+          </Space>
+        </Card>
+      </div>
+
+      {/* 中间：画布 */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          ref={canvasWrapperRef}
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          style={{
+            width: '100%',
+            height: '100%',
+            minHeight: 480,
+            borderRadius: 8,
+            overflow: 'hidden',
+            background: 'linear-gradient(180deg, #f7f8fa 0%, #f0f5ff 100%)',
+          }}
+        >
+          <ReactFlow<Node<CanvasNodeData>, Edge<CanvasEdgeData>>
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            nodeTypes={nodeTypes}
+            onInit={(instance) => {
+              reactFlowRef.current = instance;
+              instance.setViewport(viewportRef.current);
+            }}
+            onMoveEnd={(_, viewport) => {
+              viewportRef.current = viewport;
+            }}
+            fitView
+            minZoom={0.2}
+            maxZoom={2}
+            defaultEdgeOptions={{
+              type: 'smoothstep',
+              animated: true,
+              style: { strokeWidth: 2 },
+            }}
+          >
+            <Background gap={16} size={1} color="#d9d9d9" />
+            <MiniMap
+              zoomable
+              pannable
+              nodeColor={(node) => {
+                const data = node.data as CanvasNodeData;
+                if (data.expertStance) return STANCE_COLORS[data.expertStance];
+                return NODE_KIND_META[data.nodeKind]?.color ?? '#1677ff';
+              }}
+              maskColor="rgba(0,0,0,0.1)"
+            />
+            <Controls />
+          </ReactFlow>
+        </div>
+      </div>
+
+      {/* 右侧：属性编辑 */}
+      <Card size="small" style={{ width: 220, flexShrink: 0 }}>
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Title level={5} style={{ margin: 0 }}>
+            属性编辑
+          </Title>
+          {!selectedNode && !selectedEdge && <Text type="secondary" style={{ fontSize: 11 }}>点击节点/连线编辑</Text>}
+          {selectedNode && (
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Input
+                size="small"
+                value={selectedNode.data.title}
+                onChange={(event) => updateSelectedNode({ title: event.target.value })}
+                placeholder="标题"
+              />
+              <Input.TextArea
+                size="small"
+                rows={3}
+                value={selectedNode.data.content}
+                onChange={(event) => updateSelectedNode({ content: event.target.value })}
+                placeholder="内容"
+              />
+              <Select<NodeStatus>
+                size="small"
+                value={selectedNode.data.status}
+                options={STATUS_OPTIONS}
+                onChange={(value) => updateSelectedNode({ status: value })}
+              />
+              {(selectedNode.data.nodeKind === 'milestone' || selectedNode.data.nodeKind === 'consensus') && (
+                <Select<ConsensusDecision>
+                  size="small"
+                  value={selectedNode.data.decision}
+                  options={DECISION_OPTIONS}
+                  onChange={(value) => updateSelectedNode({ decision: value })}
+                />
+              )}
+              {selectedNode.data.nodeKind === 'expert' && (
+                <div>
+                  <Text type="secondary" style={{ fontSize: 10 }}>原始消息ID:</Text>
+                  <Text style={{ fontSize: 10 }}>{selectedNode.data.originalMessageId?.slice(0, 12) || '-'}</Text>
+                </div>
+              )}
+            </Space>
+          )}
+          {selectedEdge && (
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Select
+                size="small"
+                value={selectedEdge.data?.relation ?? '支持'}
+                options={RELATION_OPTIONS.map((item) => ({ label: item, value: item }))}
+                onChange={(value) => updateSelectedEdge({ relation: value, label: value })}
+              />
+              <Input
+                size="small"
+                value={selectedEdge.data?.label ?? selectedEdge.label?.toString() ?? ''}
+                onChange={(event) => updateSelectedEdge({ label: event.target.value })}
+                placeholder="连线标签"
+              />
+            </Space>
+          )}
+        </Space>
+      </Card>
+    </div>
+  );
+};
+
+export default RoundtableCanvas;

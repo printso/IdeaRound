@@ -59,7 +59,7 @@ cp .env.example .env
 # Edit .env and set your values
 # DATABASE_URL=mysql+aiomysql://root:your_password@127.0.0.1/IdeaRound
 # SERVER_HOST=0.0.0.0
-# SERVER_PORT=8000
+# SERVER_PORT=15001
 # PROMPTS_BASE_PATH=configs/prompts
 ```
 
@@ -90,13 +90,13 @@ pip install -r requirements.txt
 #### 4. Start Backend Server
 ```bash
 # Development mode (with auto-reload)
-uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 15001
 
 # Production mode
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --workers 4
+uvicorn backend.app.main:app --host 0.0.0.0 --port 15001 --workers 4
 ```
 
-The backend will run on `http://localhost:8000`, and API documentation is available at `http://localhost:8000/docs`.
+The backend will run on `http://localhost:15001`, and API documentation is available at `http://localhost:15001/docs`.
 
 ### Frontend Setup
 
@@ -116,7 +116,7 @@ Ensure the proxy configuration in `frontend/vite.config.ts` is correct:
 server: {
   proxy: {
     '/api': {
-      target: 'http://localhost:8000',
+      target: 'http://localhost:15001',
       changeOrigin: true
     }
   }
@@ -162,7 +162,7 @@ System prompts support the following storage methods:
 |----------|-------------|---------|
 | DATABASE_URL | Database connection string | - |
 | SERVER_HOST | Server listen address | 0.0.0.0 |
-| SERVER_PORT | Server port | 8000 |
+| SERVER_PORT | Server port | 15001 |
 | PROMPTS_BASE_PATH | Prompts base path | configs/prompts |
 
 ## Project Maintenance

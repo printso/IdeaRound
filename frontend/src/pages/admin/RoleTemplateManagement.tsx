@@ -10,7 +10,6 @@ import {
   Switch,
   Table,
   Tag,
-  Typography,
   message,
   Popconfirm,
 } from 'antd';
@@ -26,6 +25,7 @@ interface RoleTemplate {
   description?: string;
   soul_prompt_id?: number;
   style_prompt_id?: number;
+  soul_config?: string;
   is_default: boolean;
   is_active: boolean;
   created_at: string;
@@ -38,6 +38,7 @@ interface RoleTemplateFormValues {
   description?: string;
   soul_prompt_id?: number;
   style_prompt_id?: number;
+  soul_config?: string;
   is_default: boolean;
   is_active: boolean;
 }
@@ -259,6 +260,36 @@ const RoleTemplateManagement: React.FC = () => {
             valuePropName="checked"
           >
             <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+          </Form.Item>
+          <Form.Item
+            name="soul_config"
+            label="灵魂配置"
+            help="定义角色的性格、偏好、表达风格等，可用于AI对话时的角色设定"
+          >
+            <TextArea rows={12} placeholder="【角色名称】
+
+1. 灵魂内核
+- 信条：...
+- 性格：...
+- 使命：...
+- 底色：...
+
+2. 认知偏见与偏好
+- 偏好：...
+- 反感：...
+- 观点：...
+
+3. 专家领域
+- 专长：...
+- 领地：...
+
+4. 边界与抗拒
+- 抗拒：...
+- 红线：...
+
+5. 表达风格
+- 风格：...
+- 语气：..." />
           </Form.Item>
         </Form>
       </Modal>

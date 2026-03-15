@@ -31,12 +31,10 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   workspaceStep,
   onWorkspaceStepChange,
   canGoRoles = false,
-  roomReady = false,
 }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const { isAdmin } = useAuth();
-
   const isAdminPage = location.pathname.startsWith('/admin');
 
   const modelSelectOptions = models.map((m) => ({
@@ -45,9 +43,10 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   }));
 
   const workspaceMenuItems = [
-    { key: 'roundtable', label: '圆桌空间' },
-    { key: 'roles', label: '角色矩阵', disabled: !canGoRoles },
-    { key: 'roundtable_view', label: '查看模式', disabled: !canGoRoles },
+    { key: 'roundtable', label: '🗣️ 圆桌空间' },
+    { key: 'roles', label: '👥 角色矩阵', disabled: !canGoRoles },
+    { key: 'roundtable_view', label: '💬 查看模式', disabled: !canGoRoles },
+    { key: 'canvas_view', label: '🎨 创意画布', disabled: !canGoRoles },
   ];
 
   return (
@@ -141,8 +140,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
 const UserMenu: React.FC = () => {
   const { user, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
-  const isAdminPage = location.pathname.startsWith('/admin');
   const [isPasswordModalVisible, setIsPasswordModalVisible] = useState(false);
   const [passwordForm] = Form.useForm();
 

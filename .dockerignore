@@ -1,0 +1,50 @@
+# ============================================
+# Docker 构建忽略文件
+# ============================================
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv
+env/
+.env
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# 前端构建（会重新构建）
+frontend/dist
+frontend/node_modules
+
+# 数据库和日志
+*.db
+*.db-journal
+logs/
+*.log
+
+# 文档
+README*.md
+docs/
+LICENSE
+
+# 其他
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp

@@ -8,6 +8,7 @@ class RoleTemplateBase(BaseModel):
     description: Optional[str] = None
     soul_prompt_id: Optional[int] = None
     style_prompt_id: Optional[int] = None
+    soul_config: Optional[str] = None  # 灵魂配置长文本
     is_default: bool = False
     is_active: bool = True
 

@@ -32,7 +32,7 @@ cd ..
 
 echo.
 echo [4/4] 启动后端服务...
-start cmd /k "cd backend && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+start cmd /k "cd backend && uvicorn app.main:app --reload --host 0.0.0.0 --port 15001"
 
 echo.
 echo 后端服务正在启动中...

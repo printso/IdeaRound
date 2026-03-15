@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List
+from typing import List, Dict
 
 try:
     from backend.app.core.database import get_db
@@ -13,6 +13,28 @@ except ImportError:
     from app.schemas.roundtable_config import RoundtableConfig, RoundtableConfigCreate, RoundtableConfigUpdate
 
 router = APIRouter()
+
+# 提示词模板配置键列表
+PROMPT_CONFIG_KEYS = [
+    "prompt_base",
+    "prompt_brief_stage", 
+    "prompt_final_stage",
+    "prompt_audit_brief",
+    "prompt_audit_final",
+    "prompt_converge_trigger",
+]
+
+@router.get("/prompts", response_model=Dict[str, str])
+async def get_prompt_templates(db: AsyncSession = Depends(get_db)):
+    """获取所有提示词模板配置"""
+    result = await db.execute(
+        select(DBRoundtableConfig).where(
+            DBRoundtableConfig.config_key.in_(PROMPT_CONFIG_KEYS),
+            DBRoundtableConfig.is_active.is_(True)
+        )
+    )
+    configs = result.scalars().all()
+    return {config.config_key: config.config_value for config in configs}
 
 @router.get("/", response_model=List[RoundtableConfig])
 async def read_roundtable_configs(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):

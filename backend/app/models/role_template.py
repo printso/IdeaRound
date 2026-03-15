@@ -14,6 +14,7 @@ class RoleTemplate(Base):
     description = Column(Text, nullable=True)  # 角色描述
     soul_prompt_id = Column(Integer, ForeignKey("sys_prompts.id"), nullable=True)  # 关联系统提示词
     style_prompt_id = Column(Integer, ForeignKey("style_configs.id"), nullable=True)  # 关联风格配置
+    soul_config = Column(Text, nullable=True)  # 灵魂配置长文本
     is_default = Column(Boolean, default=False)  # 是否为默认角色
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

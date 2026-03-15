@@ -22,7 +22,7 @@ import {
   DashboardOutlined,
   ExperimentOutlined,
 } from '@ant-design/icons';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import AppHeader from '../../components/AppHeader';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -50,7 +50,6 @@ interface ChatSession {
 type MenuKey = 'chat' | 'models' | 'prompts' | 'styles' | 'roles' | 'roundtable';
 
 const ModelChat: React.FC = () => {
-  const navigate = useNavigate();
   const location = useLocation();
   const [selectedMenu, setSelectedMenu] = useState<MenuKey>('chat');
   const [models, setModels] = useState<LLMConfig[]>([]);
@@ -165,44 +164,41 @@ const ModelChat: React.FC = () => {
         throw new Error('模型不存在');
       }
 
+      // 构建消息列表
+      const allMessages = [...(currentSession?.messages || []), userMessage];
+      const lastUserMessage = allMessages[allMessages.length - 1];
+
       // 流式调用
-      const stream = await streamChatByLLMConfig({
-        llm_config_id: selectedModel.id,
-        messages: [...(currentSession?.messages || []), userMessage].map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-        stream: true,
-      });
+      await streamChatByLLMConfig(
+        selectedModel.id,
+        { message: lastUserMessage.content },
+        {
+          onDelta: (delta) => {
+            // 更新助手消息
+            setSessions((prev) => {
+              const newSessions = [...prev];
+              const sessionIndex = newSessions.findIndex((s) => s.id === currentSessionId);
+              if (sessionIndex === -1) return prev;
+              const session = newSessions[sessionIndex];
+              const messages = [...session.messages];
+              const lastMsg = messages[messages.length - 1];
+              if (lastMsg && lastMsg.role === 'assistant') {
+                messages[messages.length - 1] = { ...lastMsg, content: lastMsg.content + delta };
+              }
+              newSessions[sessionIndex] = { ...session, messages };
+              return newSessions;
+            });
+          },
+          onDone: () => {
+            setIsLoading(false);
+          },
+          onError: (error) => {
+            message.error(error);
+            setIsLoading(false);
+          },
+        },
+      );
 
-      const reader = stream.getReader();
-      const decoder = new TextDecoder();
-      let assistantContent = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        assistantContent += chunk;
-
-        // 更新助手消息
-        setSessions((prev) =>
-          prev.map((session) => {
-            if (session.id === currentSessionId) {
-              return {
-                ...session,
-                messages: session.messages.map((msg) =>
-                  msg.id === assistantMessageId
-                    ? { ...msg, content: assistantContent }
-                    : msg
-                ),
-              };
-            }
-            return session;
-          })
-        );
-      }
     } catch (error: any) {
       message.error(`聊天失败：${error.message}`);
       // 移除失败的助手消息

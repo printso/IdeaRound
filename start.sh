@@ -31,7 +31,7 @@ cd ..
 echo ""
 echo "[4/4] 启动后端服务..."
 cd backend
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
+uvicorn app.main:app --reload --host 0.0.0.0 --port 15001 &
 cd ..
 
 echo ""

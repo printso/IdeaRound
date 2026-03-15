@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import { message } from 'antd';
 
 interface UserInfo {
@@ -44,31 +44,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     localStorage.getItem(REFRESH_TOKEN_KEY)
   );
   const [isLoading, setIsLoading] = useState(true);
-
-  // 检查认证是否启用（通过尝试获取用户信息）
-  const checkAuthEnabled = async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/auth/me`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      
-      if (response.status === 401) {
-        // 需要认证但未提供有效 token
-        return true;
-      } else if (response.status === 200) {
-        // 认证成功
-        return true;
-      } else if (response.status === 403 || response.status === 404) {
-        // 认证功能未启用
-        return false;
-      }
-      return true;
-    } catch {
-      return true;
-    }
-  };
 
   // 获取当前用户信息 - 接受可选的 token 参数
   const fetchUserInfo = async (authToken?: string | null) => {
@@ -197,7 +172,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   // 检查权限
-  const hasPermission = (permission: string): boolean => {
+  const hasPermission = (_permission: string): boolean => {
     if (!user) return false;
     
     // 管理员拥有所有权限

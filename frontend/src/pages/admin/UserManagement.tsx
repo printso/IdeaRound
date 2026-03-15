@@ -11,6 +11,7 @@ import {
   Popconfirm,
   Pagination,
   Card,
+  Checkbox,
 } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, KeyOutlined } from '@ant-design/icons';
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword } from '../../api/users';
@@ -304,14 +305,14 @@ const UserManagement: React.FC = () => {
                 label="状态"
                 valuePropName="checked"
               >
-                <Input.Checkbox>启用</Input.Checkbox>
+                <Checkbox>启用</Checkbox>
               </Form.Item>
               <Form.Item
                 name="is_superuser"
                 label="管理员"
                 valuePropName="checked"
               >
-                <Input.Checkbox>超级管理员</Input.Checkbox>
+                <Checkbox>超级管理员</Checkbox>
               </Form.Item>
             </>
           )}

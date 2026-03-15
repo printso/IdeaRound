@@ -1,7 +1,7 @@
 import requests
 import traceback
 
-BASE_URL = "http://localhost:8000/api/v1"
+BASE_URL = "http://localhost:15001/api/v1"
 
 try:
     # 登录

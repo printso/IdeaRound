@@ -6,7 +6,7 @@ import requests
 import json
 
 # 配置
-BASE_URL = "http://localhost:8000/api/v1"
+BASE_URL = "http://localhost:15001/api/v1"
 USERNAME = "admin"
 PASSWORD = "admin123"
 
@@ -147,7 +147,7 @@ def main():
     print_separator("测试完成")
     print("✅ 所有测试通过！")
     print("\n提示：如果测试失败，请检查：")
-    print("  1. 后端服务是否启动（http://localhost:8000）")
+    print("  1. 后端服务是否启动（http://localhost:15001）")
     print("  2. 认证系统是否已初始化（python init_auth.py）")
     print("  3. 配置文件中 AUTH_ENABLED 是否为 true")
     print()
