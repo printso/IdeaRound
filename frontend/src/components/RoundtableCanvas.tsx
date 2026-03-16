@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
   Controls,
@@ -20,7 +20,7 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Button, Card, Divider, Input, List, Select, Space, Tag, Typography, message } from 'antd';
+import { Button, Card, Input, Select, Space, Tag, Typography, message } from 'antd';
 import { DownloadOutlined, RedoOutlined, SaveOutlined, UndoOutlined } from '@ant-design/icons';
 import { toPng } from 'html-to-image';
 
@@ -88,11 +88,6 @@ type RoundtableCanvasProps = {
   intentAnchor: string;
   messages?: MessageItem[];
   roles?: RoleMember[];
-  canvasConsensus?: string[];
-  canvasDisputes?: string[];
-  canvasUpdatedAt?: string;
-  onConsensusChange?: (items: string[]) => void;
-  onDisputesChange?: (items: string[]) => void;
   onUpdatedAtChange?: (text: string) => void;
 };
 
@@ -497,16 +492,159 @@ const getStanceColor = (stance: string): ExpertStance => {
   }
 };
 
+const toNodeSafeId = (text: string) => text.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+const buildStructuredGraph = (
+  intentAnchor: string,
+  messages: MessageItem[],
+  roles: RoleMember[],
+): { nodes: Node<CanvasNodeData>[]; edges: Edge<CanvasEdgeData>[] } => {
+  const anchorText = intentAnchor.trim() || '目标待补充';
+  const anchorNode: Node<CanvasNodeData> = {
+    id: 'anchor_main',
+    type: 'anchor',
+    position: { x: 460, y: 30 },
+    data: {
+      title: '核心意图锚点',
+      content: anchorText,
+      owner: '用户',
+      status: 'done',
+      decision: 'pending',
+      nodeKind: 'anchor',
+      summary: compressText(anchorText, 40),
+    },
+  };
+
+  const latestBySpeaker = new Map<string, MessageItem>();
+  messages.forEach((item) => {
+    if (item.speakerType === 'agent' && item.content.trim()) {
+      latestBySpeaker.set(item.speakerId || item.speakerName, item);
+    }
+  });
+
+  const selectedRoles = roles.filter((item) => item.selected);
+  const expertSeeds =
+    latestBySpeaker.size > 0
+      ? Array.from(latestBySpeaker.values())
+      : selectedRoles.map((role) => ({
+          id: `seed_${role.id}`,
+          speakerId: role.id,
+          speakerName: role.name,
+          speakerType: 'agent' as const,
+          content: `${role.name}视角：待生成观点`,
+          createdAt: '',
+        }));
+
+  const expertsCount = expertSeeds.length || 1;
+  const cols = Math.min(4, Math.max(2, expertsCount));
+  const spacingX = 250;
+  const startX = 120;
+  const startY = 230;
+
+  const expertNodes: Node<CanvasNodeData>[] = expertSeeds.map((item, index) => {
+    const role = roles.find((r) => r.id === item.speakerId) ?? roles.find((r) => r.name === item.speakerName);
+    const stance = role ? getStanceColor(role.stance) : 'neutral';
+    const row = Math.floor(index / cols);
+    const col = index % cols;
+    return {
+      id: `expert_${toNodeSafeId(item.speakerId || item.speakerName)}_${index}`,
+      type: 'expert',
+      position: {
+        x: startX + col * spacingX,
+        y: startY + row * 140,
+      },
+      data: {
+        title: role?.name || item.speakerName,
+        content: item.content,
+        owner: role?.name || item.speakerName,
+        status: 'done',
+        decision: 'pending',
+        nodeKind: 'expert',
+        expertRole: role?.name || item.speakerName,
+        expertAvatar: (role?.name || item.speakerName).slice(0, 1),
+        expertStance: stance,
+        originalMessageId: item.id,
+        summary: compressText(item.content, 28),
+      },
+    };
+  });
+
+  const negativeCount = expertNodes.filter((node) => node.data.expertStance === 'negative').length;
+  const relationText = negativeCount > 0 ? `存在 ${negativeCount} 个冲突视角，需重点协调` : '观点总体可兼容，建议合并推进';
+  const relationY = startY + (Math.ceil(expertsCount / cols) - 1) * 140 + 190;
+  const relationNode: Node<CanvasNodeData> = {
+    id: 'relation_hub',
+    type: 'relation',
+    position: { x: 460, y: relationY },
+    data: {
+      title: '冲突与关联网络',
+      content: relationText,
+      owner: '系统',
+      status: 'doing',
+      decision: 'pending',
+      nodeKind: 'relation',
+      summary: compressText(relationText, 30),
+    },
+  };
+
+  const milestoneText = negativeCount > 0 ? '仍有争议待决策' : '已具备形成共识条件';
+  const milestoneNode: Node<CanvasNodeData> = {
+    id: 'milestone_main',
+    type: 'milestone',
+    position: { x: 460, y: relationY + 170 },
+    data: {
+      title: '方案收敛与决策',
+      content: milestoneText,
+      owner: '圆桌',
+      status: negativeCount > 0 ? 'doing' : 'done',
+      decision: negativeCount > 0 ? 'dispute' : 'consensus',
+      nodeKind: 'milestone',
+      summary: milestoneText,
+    },
+  };
+
+  const edges: Edge<CanvasEdgeData>[] = [];
+  expertNodes.forEach((node) => {
+    edges.push({
+      id: `edge_anchor_${node.id}`,
+      source: anchorNode.id,
+      target: node.id,
+      type: 'smoothstep',
+      markerEnd: { type: 'arrowclosed' },
+      label: '视角输入',
+      data: { relation: '视角输入', label: '视角输入' },
+    });
+    edges.push({
+      id: `edge_expert_${node.id}`,
+      source: node.id,
+      target: relationNode.id,
+      type: 'smoothstep',
+      markerEnd: { type: 'arrowclosed' },
+      label: node.data.expertStance === 'negative' ? '冲突' : '补充',
+      data: { relation: node.data.expertStance === 'negative' ? '冲突' : '补充', label: node.data.expertStance === 'negative' ? '冲突' : '补充' },
+    });
+  });
+  edges.push({
+    id: 'edge_relation_milestone',
+    source: relationNode.id,
+    target: milestoneNode.id,
+    type: 'smoothstep',
+    markerEnd: { type: 'arrowclosed' },
+    label: '收敛决策',
+    data: { relation: '收敛决策', label: '收敛决策' },
+  });
+
+  return {
+    nodes: [anchorNode, ...expertNodes, relationNode, milestoneNode],
+    edges,
+  };
+};
+
 const RoundtableCanvas = ({
   roomId,
   intentAnchor,
   messages = [],
   roles = [],
-  canvasConsensus = [],
-  canvasDisputes = [],
-  canvasUpdatedAt = '',
-  onConsensusChange,
-  onDisputesChange,
   onUpdatedAtChange,
 }: RoundtableCanvasProps) => {
   const storageKey = useMemo(() => `idearound_roundtable_canvas_${roomId || 'default'}`, [roomId]);
@@ -623,45 +761,15 @@ const RoundtableCanvas = ({
     [broadcastSnapshot, getSnapshot, persistSnapshot],
   );
 
+  const applyStructuredLayout = useCallback(() => {
+    const { nodes: structuredNodes, edges: structuredEdges } = buildStructuredGraph(intentAnchor, messages, roles);
+    commitGraph(structuredNodes, structuredEdges, { recordHistory: false, broadcast: true, resetFuture: false });
+    reactFlowRef.current?.fitView({ padding: 0.16, duration: 200 });
+  }, [commitGraph, intentAnchor, messages, roles]);
+
   useEffect(() => {
-    if (!messages || messages.length === 0) {
-      return;
-    }
-    const existingExpertIds = new Set(
-      nodesRef.current.filter((node) => node.data.nodeKind === 'expert').map((node) => node.data.originalMessageId),
-    );
-    const newExpertNodes: Node<CanvasNodeData>[] = [];
-    messages.forEach((msg) => {
-      if (msg.speakerType === 'agent' && !existingExpertIds.has(msg.id) && msg.content.trim()) {
-        const role = roles?.find((item) => item.id === msg.speakerId);
-        const stance = role ? getStanceColor(role.stance) : 'neutral';
-        newExpertNodes.push({
-          id: createId('expert'),
-          type: 'expert',
-          position: {
-            x: 30 + Math.random() * 300,
-            y: 180 + newExpertNodes.length * 120,
-          },
-          data: {
-            title: role?.name || msg.speakerName,
-            content: msg.content,
-            owner: role?.name || msg.speakerName,
-            status: 'done',
-            decision: 'pending',
-            nodeKind: 'expert',
-            expertRole: role?.name || msg.speakerName,
-            expertAvatar: (role?.name || msg.speakerName).slice(0, 1),
-            expertStance: stance,
-            originalMessageId: msg.id,
-            summary: compressText(msg.content, 20),
-          },
-        });
-      }
-    });
-    if (newExpertNodes.length > 0) {
-      commitGraph([...nodesRef.current, ...newExpertNodes], edgesRef.current, { recordHistory: false, broadcast: true });
-    }
-  }, [commitGraph, messages, roles]);
+    applyStructuredLayout();
+  }, [applyStructuredLayout]);
 
   useEffect(() => {
     if (typeof BroadcastChannel === 'undefined') {
@@ -705,16 +813,6 @@ const RoundtableCanvas = ({
       window.removeEventListener('storage', onStorage);
     };
   }, [restoreSnapshot, storageKey]);
-
-  const addNodeAtCenter = useCallback((kind: NodeKind) => {
-    const rf = reactFlowRef.current;
-    const center = rf?.screenToFlowPosition({
-      x: window.innerWidth / 2,
-      y: window.innerHeight / 2,
-    }) ?? { x: 320, y: 180 };
-    const nextNodes = [...nodesRef.current, buildNode(kind, center)];
-    commitGraph(nextNodes, edgesRef.current);
-  }, [commitGraph]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<Node<CanvasNodeData>>[]) => {
@@ -881,144 +979,47 @@ const RoundtableCanvas = ({
     };
   }, [broadcastSnapshot, exportPng, getSnapshot, persistSnapshot, redo, removeSelected, undo]);
 
-  useEffect(() => {
-    const consensusItems = nodes
-      .filter((node) => node.data.nodeKind === 'consensus' && node.data.decision === 'consensus')
-      .map((node) => node.data.title);
-    const disputeItems = nodes
-      .filter((node) => node.data.nodeKind === 'consensus' && node.data.decision === 'dispute')
-      .map((node) => node.data.title);
-    onConsensusChange?.(consensusItems);
-    onDisputesChange?.(disputeItems);
-  }, [nodes, onConsensusChange, onDisputesChange]);
-
-  const onDragStart = (event: DragEvent<HTMLElement>, kind: NodeKind) => {
-    event.dataTransfer.setData('application/idearound-node-kind', kind);
-    event.dataTransfer.effectAllowed = 'move';
-  };
-
-  const onDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const kind = event.dataTransfer.getData('application/idearound-node-kind') as NodeKind;
-    if (!kind || !NODE_KIND_META[kind]) {
-      return;
-    }
-    const position =
-      reactFlowRef.current?.screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      }) ?? { x: 300, y: 200 };
-    const nextNodes = [...nodesRef.current, buildNode(kind, position)];
-    commitGraph(nextNodes, edgesRef.current);
-  };
-
-  const onDragOver = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-  };
-
-  // 四大核心模块的节点类型
-  const coreModules: { kind: NodeKind; label: string; color: string; icon: string }[] = [
-    { kind: 'anchor', label: '核心意图锚点', color: '#1677ff', icon: '🎯' },
-    { kind: 'expert', label: '专家观点分支', color: '#722ed1', icon: '👥' },
-    { kind: 'relation', label: '冲突与关联', color: '#d46b08', icon: '🔗' },
-    { kind: 'milestone', label: '共识里程碑', color: '#389e0d', icon: '🏆' },
-  ];
-
   return (
-    <div style={{ display: 'flex', gap: 12, width: '100%', height: '100%', minHeight: 500 }}>
-      {/* 左侧：工具箱 + 共识摘要 */}
-      <div style={{ width: 200, display: 'flex', flexDirection: 'column', gap: 12, flexShrink: 0 }}>
-        <Card size="small" style={{ flex: 1, overflow: 'auto' }}>
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <Title level={5} style={{ margin: 0 }}>
-              四大核心模块
-            </Title>
-            {coreModules.map((mod) => (
-              <Button
-                key={mod.kind}
-                block
-                draggable
-                onDragStart={(event) => onDragStart(event, mod.kind)}
-                onClick={() => addNodeAtCenter(mod.kind)}
-                style={{
-                  justifyContent: 'flex-start',
-                  borderColor: mod.color,
-                  background: `${mod.color}08`,
-                }}
-              >
-                <Space>
-                  <span>{mod.icon}</span>
-                  <Text style={{ color: mod.color }}>{mod.label}</Text>
-                </Space>
-              </Button>
-            ))}
-            <Divider style={{ margin: '8px 0' }} />
-            <Space wrap style={{ justifyContent: 'center' }}>
-              <Button size="small" icon={<UndoOutlined />} onClick={undo} disabled={historyPast.length === 0} />
-              <Button size="small" icon={<RedoOutlined />} onClick={redo} disabled={historyFuture.length === 0} />
-              <Button size="small" icon={<SaveOutlined />} onClick={() => {
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', height: '100%', minHeight: 0 }}>
+      <Card size="small" bodyStyle={{ padding: '8px 12px' }}>
+        <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
+          <Space>
+            <Tag color="blue">结构图模式</Tag>
+            <Text type="secondary">自动按“锚点 → 专家观点 → 关系网络 → 收敛决策”组织</Text>
+          </Space>
+          <Space>
+            <Button icon={<UndoOutlined />} onClick={undo} disabled={historyPast.length === 0}>
+              撤销
+            </Button>
+            <Button icon={<RedoOutlined />} onClick={redo} disabled={historyFuture.length === 0}>
+              重做
+            </Button>
+            <Button onClick={applyStructuredLayout}>一键结构化</Button>
+            <Button
+              icon={<SaveOutlined />}
+              onClick={() => {
                 const snapshot = getSnapshot();
                 persistSnapshot(snapshot);
                 broadcastSnapshot(snapshot);
                 message.success('已保存');
-              }} />
-              <Button size="small" icon={<DownloadOutlined />} onClick={() => void exportPng()} />
-            </Space>
-            <Text type="secondary" style={{ fontSize: 10 }}>
-              快捷键：Ctrl+Z 撤销，Ctrl+Y 重做
-            </Text>
+              }}
+            >
+              保存
+            </Button>
+            <Button icon={<DownloadOutlined />} onClick={() => void exportPng()}>
+              导出PNG
+            </Button>
           </Space>
-        </Card>
+        </Space>
+      </Card>
 
-        {/* 共识摘要面板 */}
-        <Card size="small" title="共识摘要" style={{ maxHeight: 200, overflow: 'auto' }}>
-          <Space direction="vertical" size={6} style={{ width: '100%' }}>
-            <Card size="small" style={{ background: '#f6ffed', borderColor: '#b7eb8f' }}>
-              <Text strong style={{ color: '#389e0d' }}>已达成共识</Text>
-              <List
-                size="small"
-                dataSource={canvasConsensus}
-                locale={{ emptyText: '暂无共识' }}
-                renderItem={(text) => (
-                  <List.Item style={{ border: 'none', padding: '2px 0', fontSize: 11 }}>
-                    <Tag color="green">✓</Tag>
-                    <Text style={{ fontSize: 11 }}>{text}</Text>
-                  </List.Item>
-                )}
-              />
-            </Card>
-            <Card size="small" style={{ background: '#fffbe6', borderColor: '#ffe58f' }}>
-              <Text strong style={{ color: '#d48806' }}>遗留争议</Text>
-              <List
-                size="small"
-                dataSource={canvasDisputes}
-                locale={{ emptyText: '暂无争议' }}
-                renderItem={(text) => (
-                  <List.Item style={{ border: 'none', padding: '2px 0', fontSize: 11 }}>
-                    <Tag color="gold">⚠</Tag>
-                    <Text style={{ fontSize: 11 }}>{text}</Text>
-                  </List.Item>
-                )}
-              />
-            </Card>
-            <Text type="secondary" style={{ fontSize: 10 }}>
-              更新于：{canvasUpdatedAt || '-'}
-            </Text>
-          </Space>
-        </Card>
-      </div>
-
-      {/* 中间：画布 */}
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', gap: 10 }}>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
         <div
           ref={canvasWrapperRef}
-          onDrop={onDrop}
-          onDragOver={onDragOver}
           style={{
             width: '100%',
             height: '100%',
-            minHeight: 480,
             borderRadius: 8,
             overflow: 'hidden',
             background: 'linear-gradient(180deg, #f7f8fa 0%, #f0f5ff 100%)',
@@ -1063,8 +1064,7 @@ const RoundtableCanvas = ({
         </div>
       </div>
 
-      {/* 右侧：属性编辑 */}
-      <Card size="small" style={{ width: 220, flexShrink: 0 }}>
+      <Card size="small" style={{ width: 260, flexShrink: 0, minHeight: 0, overflow: 'auto' }}>
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <Title level={5} style={{ margin: 0 }}>
             属性编辑
@@ -1080,7 +1080,7 @@ const RoundtableCanvas = ({
               />
               <Input.TextArea
                 size="small"
-                rows={3}
+                rows={20}
                 value={selectedNode.data.content}
                 onChange={(event) => updateSelectedNode({ content: event.target.value })}
                 placeholder="内容"
@@ -1125,6 +1125,7 @@ const RoundtableCanvas = ({
           )}
         </Space>
       </Card>
+      </div>
     </div>
   );
 };

@@ -21,13 +21,14 @@ class ChatRoom(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=True)
     status = Column(String(50), default=ChatRoomStatus.PROBING)
-    
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)  # 用户ID，实现数据隔离
+
     # Intent Probe Data (stored as JSON for flexibility)
     intent_data = Column(JSON, nullable=True) # { "goal": "...", "constraints": "..." }
-    
+
     # Control Compass Settings
     temperature = Column(Float, default=0.7)
-    
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

@@ -4,9 +4,11 @@ import {
   Card,
   Col,
   Divider,
+  Dropdown,
   Empty,
   Form,
   Input,
+  InputNumber,
   Layout,
   List,
   Row,
@@ -24,6 +26,15 @@ import { getLLMConfigs, streamChatByLLMConfig } from '../api/llm';
 import type { LLMConfig } from '../api/llm';
 import AppHeader from '../components/AppHeader';
 import RoundtableCanvas from '../components/RoundtableCanvas';
+import {
+  createWorkspace,
+  listWorkspaces,
+  getWorkspace,
+  updateWorkspace,
+  deleteWorkspace,
+  type WorkspaceData,
+} from '../api/workspace';
+import { useAuth } from '../contexts/AuthContext';
 
 const { Sider, Content, Footer } = Layout;
 const { Paragraph, Text } = Typography;
@@ -71,10 +82,67 @@ type RoleMember = {
 };
 
 const Home = () => {
+  const { isAuthenticated } = useAuth();
+
+  // 添加自定义样式用于列表项hover效果和菜单
+  const listItemStyle = `
+    .roundtable-list-item {
+      transition: all 0.2s ease-in-out;
+    }
+    .roundtable-list-item:hover {
+      background: #fafafa !important;
+      border-color: #d9d9d9 !important;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
+      transform: translateY(-1px);
+    }
+    .roundtable-list-item.selected:hover {
+      background: linear-gradient(135deg, #e6f4ff 0%, #d4ebff 100%) !important;
+      border-color: #91caff !important;
+      boxShadow: 0 4px 12px rgba(22, 119, 255, 0.16) !important;
+      transform: translateY(-1px);
+    }
+    /* 自定义下拉菜单样式 */
+    .roundtable-settings-menu .ant-dropdown-menu {
+      border-radius: 8px;
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+      border: 1px solid #f0f0f0;
+      padding: 4px 0;
+    }
+    .roundtable-settings-menu .ant-dropdown-menu-item {
+      padding: 8px 12px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .roundtable-settings-menu .ant-dropdown-menu-item:hover {
+      background-color: #f5f5f5;
+    }
+    .roundtable-settings-menu .ant-dropdown-menu-item-danger {
+      color: #ff4d4f;
+    }
+    .roundtable-settings-menu .ant-dropdown-menu-item-danger:hover {
+      background-color: #fff2f0;
+    }
+    /* 三点按钮悬停效果 */
+    .roundtable-settings-button {
+      opacity: 0.7;
+    }
+    .roundtable-list-item:hover .roundtable-settings-button,
+    .roundtable-settings-button:hover {
+      opacity: 1;
+      background-color: rgba(0, 0, 0, 0.04);
+      color: #1677ff !important;
+    }
+    .roundtable-list-item.selected .roundtable-settings-button:hover {
+      background-color: rgba(22, 119, 255, 0.1);
+    }
+  `;
+
   // localStorage key
   const STORAGE_KEY = 'idearound_workspace';
 
-  // 从 localStorage 加载保存的状态
+  // 从 localStorage 加载保存的状态（作为 fallback）
   const loadSavedState = () => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -127,15 +195,359 @@ const Home = () => {
   const [canvasDisputes, setCanvasDisputes] = useState<string[]>(savedState?.canvasDisputes || []);
   const [canvasUpdatedAt, setCanvasUpdatedAt] = useState(savedState?.canvasUpdatedAt || '');
   const [roundtableRooms, setRoundtableRooms] = useState<RoundtableRoom[]>(savedState?.roundtableRooms || []);
+  const [backendWorkspaceIds, setBackendWorkspaceIds] = useState<Set<string>>(new Set());
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>(savedState?.roundtableStage || 'brief');
-  const [pendingAutoSend, setPendingAutoSend] = useState<{ roomId: string; text: string } | null>(null);
+  const [pendingAutoSend, setPendingAutoSend] = useState<{ roomId: string; text: string; stage: RoundtableStage } | null>(null);
+  const [expectedResult, setExpectedResult] = useState(savedState?.expectedResult || '');
+  const [generatingExpectedResult, setGeneratingExpectedResult] = useState(false);
+  const [maxDialogueRounds, setMaxDialogueRounds] = useState<number>(savedState?.maxDialogueRounds || 6);
+  const [autoRoundCount, setAutoRoundCount] = useState<number>(savedState?.autoRoundCount || 0);
+  const [autoConversationEnabled, setAutoConversationEnabled] = useState(true);
   const [customProbeOptions, setCustomProbeOptions] = useState<Record<string, string>>({});
   const [editingSoulConfigRole, setEditingSoulConfigRole] = useState<RoleMember | null>(null);
   const [editingSoulConfigText, setEditingSoulConfigText] = useState('');
   const [newRoleName, setNewRoleName] = useState('');
+  const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const suppressBackendSaveRef = useRef(false);
+  const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasLoadedInitialDataRef = useRef(false);
   const [form] = Form.useForm();
+
+  // 生成基于意图洞察的摘要标题
+  const generateIntentSummaryTitle = async (intentData: {
+    initialDemand: string;
+    intentCard: IntentCardState;
+    probeTurns: ProbeTurn[];
+  }, creationTime?: Date): Promise<string> => {
+    try {
+      const { initialDemand, intentCard, probeTurns } = intentData;
+      const timeToUse = creationTime || new Date();
+      
+      // 如果没有选择模型或没有数据，返回默认标题
+      if (!selectedModelId || (!initialDemand && !intentCard.coreGoal)) {
+        return `圆桌空间_${timeToUse.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+      }
+      
+      // 构建提示词
+      const prompt = `基于以下意图洞察信息，生成一个20字以内的中文摘要标题。要求：简洁明了，概括核心意图，不包含技术术语，适合作为圆桌空间名称。
+      
+原始需求：${initialDemand || '无'}
+核心目标：${intentCard.coreGoal || '无'}
+限制条件：${intentCard.constraints || '无'}
+关键痛点：${intentCard.painPoints || '无'}
+澄清对话：${probeTurns.map(turn => `${turn.role}: ${turn.content}`).join(' | ') || '无'}
+
+请直接输出摘要标题，不要添加任何解释。`;
+
+      let summary = '';
+      let summaryComplete = false;
+      let summaryError: string | null = null;
+      
+      // 使用现有的流式API生成摘要
+      await streamChatByLLMConfig(
+        selectedModelId,
+        {
+          message: prompt,
+          system_prompt: '你是一个专业的标题生成器。根据用户提供的意图洞察信息，生成简洁明了的20字以内中文标题。'
+        },
+        {
+          onDelta: (delta) => {
+            summary += delta;
+          },
+          onDone: () => {
+            summaryComplete = true;
+          },
+          onError: (err) => {
+            console.error('生成标题失败:', err);
+            summaryError = err;
+            summaryComplete = true;
+          },
+        }
+      );
+
+      // 等待摘要完成（最长等待10秒）
+      await new Promise<void>((resolve) => {
+        const startTime = Date.now();
+        const check = () => {
+          if (summaryComplete || Date.now() - startTime > 10000) {
+            resolve();
+          } else {
+            setTimeout(check, 100);
+          }
+        };
+        check();
+      });
+
+      // 检查是否有错误
+      if (summaryError) {
+        throw new Error(summaryError);
+      }
+      
+      // 清理和格式化标题
+      let cleanSummary = summary.trim();
+      
+      // 移除可能的引号、冒号等标点
+      cleanSummary = cleanSummary.replace(/["'【】《》：：]/g, '');
+      
+      // 如果标题过长，截断到20字
+      if (cleanSummary.length > 20) {
+        cleanSummary = cleanSummary.substring(0, 20);
+      }
+      
+      // 如果生成失败或为空，使用默认标题
+      if (!cleanSummary) {
+        const defaultTitle = intentCard.coreGoal 
+          ? `${intentCard.coreGoal.substring(0, 15)}`
+          : initialDemand 
+            ? `${initialDemand.substring(0, 15)}`
+            : '圆桌空间';
+        return `${defaultTitle}_${timeToUse.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+      }
+      
+      return `${cleanSummary}_${timeToUse.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+    } catch (error) {
+      console.error('生成意图摘要标题失败:', error);
+      // 生成备选标题
+      const fallbackTitle = intentData.intentCard.coreGoal 
+        ? `${intentData.intentCard.coreGoal.substring(0, 15)}`
+        : intentData.initialDemand 
+          ? `${intentData.initialDemand.substring(0, 15)}`
+          : '圆桌空间';
+      const timeToUse = creationTime || new Date();
+      return `${fallbackTitle}_${timeToUse.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+    }
+  };
+
+  const collectModelText = useCallback(async (prompt: string, systemPromptText: string) => {
+    if (!selectedModelId) {
+      return '';
+    }
+    let output = '';
+    let done = false;
+    await streamChatByLLMConfig(
+      selectedModelId,
+      {
+        message: prompt,
+        system_prompt: systemPromptText,
+      },
+      {
+        onDelta: (delta) => {
+          output += delta;
+        },
+        onDone: () => {
+          done = true;
+        },
+        onError: () => {
+          done = true;
+        },
+      },
+    );
+    if (!done) {
+      return output.trim();
+    }
+    return output.trim();
+  }, [selectedModelId]);
+
+  const parseJsonObject = (text: string) => {
+    const candidate = text.match(/\{[\s\S]*\}/)?.[0];
+    if (!candidate) {
+      return null;
+    }
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      return null;
+    }
+  };
+
+  const generateExpectedResultByIntent = async (intentData: IntentCardState) => {
+    const fallback = `围绕「${intentData.coreGoal || '当前需求'}」形成可执行方案，并明确关键路径、风险对策与可验证指标。`;
+    if (!selectedModelId) {
+      return fallback;
+    }
+    const prompt = `你需要基于意图洞察生成“期望结果”。
+请只输出一段中文，不超过120字，不要使用标题，不要使用列表。
+
+原始需求：${initialDemand || '无'}
+核心目标：${intentData.coreGoal || '无'}
+限制条件：${intentData.constraints || '无'}
+待解决痛点：${intentData.painPoints || '无'}
+澄清交互：${probeTurns.map((turn) => `${turn.role}:${turn.content}`).join(' | ') || '无'}
+`;
+    const text = await collectModelText(
+      prompt,
+      '你是产品目标设定专家，擅长把需求转化为可检验的期望结果描述。',
+    );
+    return text || fallback;
+  };
+
+  const evaluateExpectedResultReached = useCallback(async (conversationText: string, currentRound: number) => {
+    if (!selectedModelId || !expectedResult.trim()) {
+      return { reached: false, reason: '', nextPrompt: '' };
+    }
+    const prompt = `你是圆桌对话收敛检查器，请判断当前讨论是否已经达到期望结果。
+请严格输出 JSON，不要额外说明：
+{"reached":true/false,"reason":"不超过60字","next_prompt":"若未达到，给出下一轮用户引导语；若已达到可留空"}
+
+期望结果：${expectedResult}
+当前轮次：${currentRound}/${maxDialogueRounds}
+核心目标：${intentCard.coreGoal || '无'}
+限制条件：${intentCard.constraints || '无'}
+待解决痛点：${intentCard.painPoints || '无'}
+最近对话：
+${conversationText || '无'}
+`;
+    const raw = await collectModelText(
+      prompt,
+      '你擅长判断目标达成度，要求判断保守、明确，避免误判。',
+    );
+    const json = parseJsonObject(raw);
+    if (!json) {
+      return { reached: false, reason: '', nextPrompt: '' };
+    }
+    return {
+      reached: Boolean(json.reached),
+      reason: typeof json.reason === 'string' ? json.reason.trim() : '',
+      nextPrompt: typeof json.next_prompt === 'string' ? json.next_prompt.trim() : '',
+    };
+  }, [
+    selectedModelId,
+    expectedResult,
+    maxDialogueRounds,
+    intentCard.coreGoal,
+    intentCard.constraints,
+    intentCard.painPoints,
+    collectModelText,
+  ]);
+
+  const loadWorkspaces = async () => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    try {
+      const workspaces = await listWorkspaces();
+      if (workspaces.length > 0) {
+        // 将后端数据转换为前端格式
+        const rooms = workspaces.map(ws => ({
+          id: ws.room_id || ws.data.room_id,
+          name: ws.data.room_name || ws.room_id,
+          createdAt: ws.updated_at || ws.created_at,
+        }));
+        setRoundtableRooms(rooms);
+        setBackendWorkspaceIds(new Set(rooms.map((item) => item.id)));
+
+        // 加载最新的工作台数据
+        const latestWorkspace = workspaces[0];
+        loadWorkspaceData(latestWorkspace.data);
+      } else {
+        setBackendWorkspaceIds(new Set());
+      }
+    } catch (error) {
+      console.error('加载工作台列表失败:', error);
+    }
+  };
+
+  const loadWorkspaceData = (data: WorkspaceData) => {
+    setStep(data.step as StepKey);
+    setInitialDemand(data.initial_demand);
+    setIntentCard(data.intent_card);
+    setIntentReady(data.intent_ready);
+    setRoles(data.roles.map(role => ({
+      id: role.id,
+      name: role.name,
+      stance: role.stance as '建设' | '对抗' | '中立' | '评审',
+      desc: role.desc,
+      selected: role.selected,
+      soulConfig: role.soul_config || role.soulConfig,
+    })));
+    setRolesReady(data.roles_ready);
+    setRoomReady(data.room_ready);
+    setRoomId(data.room_id);
+    setSystemPrompt(data.system_prompt);
+    setMessages(data.messages.map(msg => ({
+      id: msg.id,
+      speakerId: (msg.speaker_id || msg.speakerId) as string,
+      speakerName: (msg.speaker_name || msg.speakerName) as string,
+      speakerType: (msg.speaker_type || msg.speakerType) as 'user' | 'agent',
+      content: msg.content,
+      streaming: msg.streaming ?? false,
+      createdAt: (msg.created_at || msg.createdAt) as string,
+    })));
+    setCanvasConsensus(data.canvas_consensus);
+    setCanvasDisputes(data.canvas_disputes);
+    setCanvasUpdatedAt(data.canvas_updated_at);
+    setRoundtableStage(data.roundtable_stage as RoundtableStage);
+    setSelectedModelId(data.selected_model_id);
+    setExpectedResult(data.expected_result || '');
+    setMaxDialogueRounds(data.max_dialogue_rounds || 6);
+    setAutoRoundCount(data.auto_round_count || 0);
+    setAutoConversationEnabled(true);
+  };
+
+  const saveWorkspaceToBackend = async () => {
+    if (!isAuthenticated || !roomId) {
+      return;
+    }
+
+    try {
+      const workspaceData: WorkspaceData = {
+        room_id: roomId,
+        room_name: roundtableRooms.find(r => r.id === roomId)?.name || `圆桌空间-${new Date().toLocaleString()}`,
+        step,
+        initial_demand: initialDemand,
+        intent_card: intentCard,
+        intent_ready: intentReady,
+        roles: roles.map(role => ({
+          id: role.id,
+          name: role.name,
+          stance: role.stance,
+          desc: role.desc,
+          selected: role.selected,
+          soul_config: role.soulConfig,
+        })),
+        roles_ready: rolesReady,
+        room_ready: roomReady,
+        system_prompt: systemPrompt,
+        messages: messages.map(msg => ({
+          id: msg.id,
+          speaker_id: msg.speakerId,
+          speaker_name: msg.speakerName,
+          speaker_type: msg.speakerType,
+          content: msg.content,
+          streaming: msg.streaming,
+          created_at: msg.createdAt,
+        })),
+        canvas_consensus: canvasConsensus,
+        canvas_disputes: canvasDisputes,
+        canvas_updated_at: canvasUpdatedAt,
+        roundtable_stage: roundtableStage,
+        selected_model_id: selectedModelId,
+        expected_result: expectedResult,
+        max_dialogue_rounds: maxDialogueRounds,
+        auto_round_count: autoRoundCount,
+      };
+
+      if (backendWorkspaceIds.has(roomId)) {
+        try {
+          await updateWorkspace(roomId, workspaceData);
+        } catch {
+          await createWorkspace(workspaceData);
+        }
+      } else {
+        await createWorkspace(workspaceData);
+      }
+      setBackendWorkspaceIds((prev) => {
+        const next = new Set(prev);
+        next.add(roomId);
+        return next;
+      });
+    } catch (error) {
+      console.error('保存工作台到后端失败:', error);
+    }
+  };
 
   const loadModels = async () => {
     setLoadingModels(true);
@@ -190,12 +602,19 @@ const Home = () => {
   };
 
   useEffect(() => {
+    // 防止在 React StrictMode 下重复加载
+    if (hasLoadedInitialDataRef.current) {
+      return;
+    }
+    hasLoadedInitialDataRef.current = true;
+
     loadModels();
     loadRoleTemplates();
     loadPromptTemplates();
+    loadWorkspaces(); // 加载工作台列表
   }, []);
 
-  // 保存工作台状态到 localStorage
+  // 保存工作台状态到 localStorage（作为 fallback）和后端
   useEffect(() => {
     const stateToSave = {
       step,
@@ -214,12 +633,33 @@ const Home = () => {
       roundtableRooms,
       roundtableStage,
       selectedModelId,
+      expectedResult,
+      maxDialogueRounds,
+      autoRoundCount,
     };
+
+    // 保存到 localStorage（作为 fallback）
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
     } catch (e) {
       console.error('保存状态失败:', e);
     }
+
+    // 保存到后端（如果已登录且有 roomId）
+    if (isAuthenticated && roomId && roomReady && !suppressBackendSaveRef.current) {
+      if (saveDebounceRef.current) {
+        clearTimeout(saveDebounceRef.current);
+      }
+      saveDebounceRef.current = setTimeout(() => {
+        void saveWorkspaceToBackend();
+      }, 500);
+    }
+    return () => {
+      if (saveDebounceRef.current) {
+        clearTimeout(saveDebounceRef.current);
+        saveDebounceRef.current = null;
+      }
+    };
   }, [
     step,
     initialDemand,
@@ -237,6 +677,11 @@ const Home = () => {
     roundtableRooms,
     roundtableStage,
     selectedModelId,
+    expectedResult,
+    maxDialogueRounds,
+    autoRoundCount,
+    isAuthenticated,
+    backendWorkspaceIds,
   ]);
 
   useEffect(() => {
@@ -293,6 +738,8 @@ const Home = () => {
     setCanvasConsensus([]);
     setCanvasDisputes([]);
     setCanvasUpdatedAt('');
+    setAutoRoundCount(0);
+    setAutoConversationEnabled(true);
     const questions = generateProbeQuestions(initialDemand);
     setProbeQuestions(questions);
     setProbeTurns([
@@ -323,6 +770,20 @@ const Home = () => {
     setIntentCard(values);
     if (!values.coreGoal?.trim()) {
       message.warning('请先完善核心目标');
+      return;
+    }
+    let nextExpectedResult = expectedResult.trim();
+    if (!nextExpectedResult) {
+      setGeneratingExpectedResult(true);
+      try {
+        nextExpectedResult = await generateExpectedResultByIntent(values as IntentCardState);
+        setExpectedResult(nextExpectedResult);
+      } finally {
+        setGeneratingExpectedResult(false);
+      }
+    }
+    if (!nextExpectedResult.trim()) {
+      message.warning('请先生成或填写期望结果');
       return;
     }
     setIntentReady(true);
@@ -375,7 +836,13 @@ const Home = () => {
     message.success(`已删除角色：${role?.name}`);
   };
 
-  const confirmRoles = () => {
+  const confirmRoles = async () => {
+    // 防止重复提交
+    if (isCreatingWorkspace) {
+      message.warning('正在创建圆桌空间，请稍候...');
+      return;
+    }
+
     const selected = roles.filter((r) => r.selected);
     // 检查是否包含黑帽风控官（stance为"对抗"或名称包含"黑帽"）
     const hasBlackhat = selected.some((r) => r.stance === '对抗' || r.name.includes('黑帽'));
@@ -389,35 +856,138 @@ const Home = () => {
       message.warning('必须包含审计官角色');
       return;
     }
-    setMessages([]);
-    setCanvasConsensus([]);
-    setCanvasDisputes([]);
-    setCanvasUpdatedAt('');
-    setRoundtableStage('brief');
-    setRolesReady(true);
-    setRoomReady(true);
-    const newRoomId = `room_${Date.now().toString(36)}`;
-    setRoomId(newRoomId);
-    const newRoom: RoundtableRoom = {
-      id: newRoomId,
-      name: `圆桌空间-${new Date().toLocaleString()}`,
-      createdAt: new Date().toLocaleString(),
-    };
-    setRoundtableRooms((prev) => [newRoom, ...prev]);
-    setStep('roundtable_view');
-    setCanvasUpdatedAt(new Date().toLocaleString());
-    const seedLines = [
-      initialDemand.trim() ? `需求原始描述：${initialDemand.trim()}` : '',
-      intentCard.coreGoal ? `核心目标：${intentCard.coreGoal}` : '',
-      intentCard.constraints ? `限制条件：${intentCard.constraints}` : '',
-      intentCard.painPoints ? `关键痛点：${intentCard.painPoints}` : '',
-      '请各角色先给出最关键的 3-5 条核心要点（不要输出总结性方案）。',
-    ].filter(Boolean);
-    const seedText = seedLines.join('\n');
-    if (seedText.trim()) {
-      setPendingAutoSend({ roomId: newRoomId, text: seedText });
+
+    setIsCreatingWorkspace(true);
+    try {
+      setMessages([]);
+      setCanvasConsensus([]);
+      setCanvasDisputes([]);
+      setCanvasUpdatedAt('');
+      setRoundtableStage('brief');
+      setAutoRoundCount(0);
+      setAutoConversationEnabled(true);
+      setPendingAutoSend(null);
+      setRolesReady(true);
+      setRoomReady(true);
+      const newRoomId = `room_${Date.now().toString(36)}`;
+      setRoomId(newRoomId);
+
+      // 先生成一个默认标题
+      const defaultTitle = `圆桌空间_${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+      const newRoom: RoundtableRoom = {
+        id: newRoomId,
+        name: defaultTitle,
+        createdAt: new Date().toISOString(),
+      };
+      setRoundtableRooms((prev) => [newRoom, ...prev]);
+      setStep('roundtable_view');
+      setCanvasUpdatedAt(new Date().toLocaleString());
+
+      // 异步生成基于意图洞察的标题
+      const generateAndUpdateTitle = async () => {
+        try {
+          const intentData = {
+            initialDemand,
+            intentCard,
+            probeTurns,
+          };
+          const generatedTitle = await generateIntentSummaryTitle(intentData, new Date());
+
+          // 更新房间标题
+          setRoundtableRooms((prev) =>
+            prev.map((room) =>
+              room.id === newRoomId ? { ...room, name: generatedTitle } : room
+            )
+          );
+
+          // 如果已登录，更新后端数据
+          if (isAuthenticated && backendWorkspaceIds.has(newRoomId)) {
+            try {
+              const workspaceData: WorkspaceData = {
+                room_id: newRoomId,
+                room_name: generatedTitle,
+                step: 'roundtable_view',
+                initial_demand: initialDemand,
+                intent_card: intentCard,
+                intent_ready: intentReady,
+                roles: roles,
+                roles_ready: rolesReady,
+                room_ready: roomReady,
+                system_prompt: systemPrompt,
+                messages: [],
+                canvas_consensus: [],
+                canvas_disputes: [],
+                canvas_updated_at: canvasUpdatedAt,
+                roundtable_stage: 'brief',
+                selected_model_id: selectedModelId,
+                expected_result: expectedResult,
+                max_dialogue_rounds: maxDialogueRounds,
+                auto_round_count: 0,
+              };
+              await updateWorkspace(newRoomId, workspaceData);
+            } catch (error) {
+              console.error('更新工作台标题失败:', error);
+            }
+          }
+        } catch (error) {
+          console.error('生成意图摘要标题失败:', error);
+        }
+      };
+
+      // 启动异步标题生成
+      generateAndUpdateTitle();
+
+      // 保存到后端
+      if (isAuthenticated) {
+        try {
+          const workspaceData: WorkspaceData = {
+            room_id: newRoomId,
+            room_name: newRoom.name,
+            step: 'roundtable_view',
+            initial_demand: initialDemand,
+            intent_card: intentCard,
+            intent_ready: intentReady,
+            roles: roles,
+            roles_ready: rolesReady,
+            room_ready: roomReady,
+            system_prompt: systemPrompt,
+            messages: [],
+            canvas_consensus: [],
+            canvas_disputes: [],
+            canvas_updated_at: canvasUpdatedAt,
+            roundtable_stage: 'brief',
+            selected_model_id: selectedModelId,
+            expected_result: expectedResult,
+            max_dialogue_rounds: maxDialogueRounds,
+            auto_round_count: 0,
+          };
+          await createWorkspace(workspaceData);
+          setBackendWorkspaceIds((prev) => {
+            const next = new Set(prev);
+            next.add(newRoomId);
+            return next;
+          });
+        } catch (error) {
+          console.error('创建工作台失败:', error);
+        }
+      }
+
+      const seedLines = [
+        initialDemand.trim() ? `需求原始描述：${initialDemand.trim()}` : '',
+        intentCard.coreGoal ? `核心目标：${intentCard.coreGoal}` : '',
+        intentCard.constraints ? `限制条件：${intentCard.constraints}` : '',
+        intentCard.painPoints ? `关键痛点：${intentCard.painPoints}` : '',
+        expectedResult.trim() ? `期望结果：${expectedResult.trim()}` : '',
+        '请各角色先给出最关键的 3-5 条核心要点（不要输出总结性方案）。',
+      ].filter(Boolean);
+      const seedText = seedLines.join('\n');
+      if (seedText.trim()) {
+        setPendingAutoSend({ roomId: newRoomId, text: seedText, stage: 'brief' });
+      }
+      message.success('角色矩阵确认完成，已自动创建圆桌空间');
+    } finally {
+      setIsCreatingWorkspace(false);
     }
-    message.success('角色矩阵确认完成，已自动创建圆桌空间');
   };
 
   const createNewRoundtable = () => {
@@ -437,26 +1007,88 @@ const Home = () => {
     setCanvasUpdatedAt('');
     setRoundtableStage('brief');
     setPendingAutoSend(null);
+    setExpectedResult('');
+    setMaxDialogueRounds(6);
+    setAutoRoundCount(0);
+    setAutoConversationEnabled(true);
   };
 
-  const selectRoundtableRoom = (room: RoundtableRoom) => {
+  const selectRoundtableRoom = async (room: RoundtableRoom) => {
+    suppressBackendSaveRef.current = true;
     setRoomId(room.id);
     setStep('roundtable_view');
     setRoomReady(true);
+
+    // 如果已登录，从后端加载工作台数据
+    if (isAuthenticated && backendWorkspaceIds.has(room.id)) {
+      try {
+        const workspaceData = await getWorkspace(room.id);
+        if (workspaceData) {
+          loadWorkspaceData(workspaceData.data);
+        }
+      } catch (error) {
+        console.error('加载工作台数据失败:', error);
+      }
+    }
+    setTimeout(() => {
+      suppressBackendSaveRef.current = false;
+    }, 200);
   };
 
-  const deleteRoundtableRoom = (roomIdToDelete: string, e: React.MouseEvent) => {
+  const deleteRoundtableRoom = async (roomIdToDelete: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    suppressBackendSaveRef.current = true;
+
+    // 从后端删除（如果已登录且工作台存在于后端）
+    if (isAuthenticated && backendWorkspaceIds.has(roomIdToDelete)) {
+      try {
+        await deleteWorkspace(roomIdToDelete);
+        setBackendWorkspaceIds((prev) => {
+          const next = new Set(prev);
+          next.delete(roomIdToDelete);
+          return next;
+        });
+      } catch (error) {
+        console.error('删除工作台失败:', error);
+        // 即使后端删除失败，也继续删除前端数据
+      }
+    }
+
+    // 从前端状态中删除
     setRoundtableRooms((prev) => prev.filter((room) => room.id !== roomIdToDelete));
+
+    // 如果删除的是当前选中的房间
     if (roomId === roomIdToDelete) {
+      setRoomReady(false);
+      setRoomId('');
       const remaining = roundtableRooms.filter((room) => room.id !== roomIdToDelete);
       if (remaining.length > 0) {
-        selectRoundtableRoom(remaining[0]);
+        // 加载剩余的第一个工作台
+        const nextRoom = remaining[0];
+        selectRoundtableRoom(nextRoom);
+        if (isAuthenticated && backendWorkspaceIds.has(nextRoom.id)) {
+          const workspaceData = await getWorkspace(nextRoom.id);
+          if (workspaceData) {
+            loadWorkspaceData(workspaceData.data);
+          }
+        }
       } else {
         createNewRoundtable();
       }
     }
     message.success('圆桌空间已删除');
+    setTimeout(() => {
+      suppressBackendSaveRef.current = false;
+    }, 300);
+  };
+
+  const formatRoomDisplayName = (room: RoundtableRoom, index: number) => {
+    // 直接返回房间名称，标题已经是"大模型总结文本_时间"格式
+    // 如果名称为空或只包含空格，返回默认标题
+    if (!room.name || room.name.trim() === '') {
+      return `圆桌空间 #${index + 1}`;
+    }
+    return room.name.trim();
   };
 
   const startEditingRoomName = (roomIdToEdit: string, e: React.MouseEvent) => {
@@ -477,6 +1109,8 @@ const Home = () => {
     abortRef.current = null;
     setSending(false);
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
+    setPendingAutoSend(null);
+    setAutoConversationEnabled(false);
   };
 
   const buildTranscript = useCallback((items: { speakerName: string; content: string }[]) => {
@@ -489,6 +1123,7 @@ const Home = () => {
       promptTemplates.prompt_base || '你是圆桌创意中的一个角色，请保持高信噪比，避免客套话与重复。',
       `你的身份：${role.name}（立场：${role.stance}）。`,
       `用户意图锚点：${intentCard.coreGoal || '未提供'}。`,
+      expectedResult ? `本轮收敛目标（期望结果）：${expectedResult}` : '',
       intentCard.constraints ? `限制条件：${intentCard.constraints}` : '',
       intentCard.painPoints ? `待解决痛点：${intentCard.painPoints}` : '',
     ].filter(Boolean);
@@ -532,7 +1167,7 @@ const Home = () => {
     }
 
     return base.join('\n');
-  }, [intentCard.constraints, intentCard.coreGoal, intentCard.painPoints, promptTemplates]);
+  }, [expectedResult, intentCard.constraints, intentCard.coreGoal, intentCard.painPoints, promptTemplates]);
 
   const sendToRoundtable = useCallback(async (overrideText?: string, overrideStage?: RoundtableStage) => {
     if (!selectedModelId) {
@@ -554,6 +1189,7 @@ const Home = () => {
     }
 
     const stage = overrideStage ?? roundtableStage;
+    setAutoConversationEnabled(true);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -580,15 +1216,18 @@ const Home = () => {
     const selectedRoles = roles.filter((r) => r.selected);
     const speakingRoles = autoBrainstorm ? selectedRoles : selectedRoles.slice(0, 1);
 
-    const transcript = buildTranscript(
-      [...messages, { id: userMessageId, speakerId: 'user', speakerName: '我', speakerType: 'user', content: userText, createdAt: now }].map(
-        (m) => ({ speakerName: m.speakerName, content: m.content }),
-      ),
-    );
+    const conversationItems = [
+      ...messages,
+      { id: userMessageId, speakerId: 'user', speakerName: '我', speakerType: 'user' as const, content: userText, createdAt: now },
+    ].map((m) => ({ speakerName: m.speakerName, content: m.content }));
 
     try {
+      // 串行处理每个角色，确保每个角色都能看到前面所有角色的回答
       for (const role of speakingRoles) {
         const assistantId = `m_${role.id}_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`;
+        let roleReply = '';
+        
+        // 为当前角色创建消息条目
         setMessages((prev) => [
           ...prev,
           {
@@ -602,14 +1241,62 @@ const Home = () => {
           },
         ]);
 
+        // 构建包含前面所有角色回答的对话记录
+        // conversationItems 已经包含了前面角色的回答
+        const fullTranscript = buildTranscript(conversationItems);
+        
+        // 增强系统提示词，强调需要考虑前面角色的回答和主题一致性
+        const previousRolesReplies = conversationItems
+          .filter(item => speakingRoles.some(r => r.name === item.speakerName))
+          .map(item => `${item.speakerName}：${item.content}`)
+          .join('\n\n');
+        
+        const enhancedSystemPrompt = `${buildAgentSystemPrompt(role, stage)}
+
+【对话上下文与主题一致性要求】
+你正在参与一个结构化圆桌讨论，前面已有其他角色发表观点。请严格遵循以下要求：
+
+1. 主题锚点：核心讨论围绕「${intentCard.coreGoal || '未指定目标'}」
+2. 上下文继承：前面角色的回答：
+${previousRolesReplies || '暂无其他角色回答，你是第一个发言的角色。'}
+
+3. 回答要求：
+   - 必须基于前面角色的观点进行回应或拓展
+   - 避免重复前面已经阐述过的内容
+   - 如提出新观点，需与前面讨论逻辑衔接
+   - 如有反对意见，需引用具体观点并给出理由
+   - 保持专业讨论氛围，避免偏离核心主题
+
+4. 输出格式：请直接给出你的观点，无需客套话。
+
+当前对话阶段：${stage === 'brief' ? '脑暴发散阶段 - 提出3-5个核心要点' : '收敛定稿阶段 - 给出总结性方案'}
+
+${systemPrompt.trim() ? `补充系统提示词：${systemPrompt.trim()}` : ''}`;
+
+        // 为主题一致性检查构建提示
+        const topicCheckPrompt = previousRolesReplies ? 
+          `（请注意：前面已有${conversationItems.filter(item => speakingRoles.some(r => r.name === item.speakerName)).length}位角色发言，请确保你的回答与他们的观点连贯，不要偏离核心主题）」` : 
+          '（你是第一个发言的角色，请围绕主题展开）」';
+        
         await streamChatByLLMConfig(
           selectedModelId,
           {
-            message: `对话记录（最近）：\n${transcript}\n\n用户本轮输入：${userText}`,
-            system_prompt: `${buildAgentSystemPrompt(role, stage)}\n\n${systemPrompt.trim() ? `补充系统提示词：${systemPrompt.trim()}` : ''}`,
+            message: `【对话主题】${intentCard.coreGoal || '未指定目标'}
+            
+【历史对话摘要】
+${fullTranscript || '暂无历史对话'}
+
+【本轮用户输入】
+${userText}
+
+【你的角色任务】
+作为「${role.name}」（立场：${role.stance}），请基于以上对话历史进行回应${topicCheckPrompt}`,
+            system_prompt: enhancedSystemPrompt,
           },
           {
             onDelta: (delta) => {
+              roleReply += delta;
+              // 实时更新当前角色的消息内容
               setMessages((prev) =>
                 prev.map((m) => {
                   if (m.id !== assistantId) {
@@ -620,6 +1307,7 @@ const Home = () => {
               );
             },
             onDone: () => {
+              // 标记当前角色完成流式传输
               setMessages((prev) =>
                 prev.map((m) => {
                   if (m.id !== assistantId) {
@@ -630,6 +1318,7 @@ const Home = () => {
               );
             },
             onError: (err) => {
+              roleReply = `${roleReply}\n\n> 错误：${err}`;
               setMessages((prev) =>
                 prev.map((m) => {
                   if (m.id !== assistantId) {
@@ -642,6 +1331,9 @@ const Home = () => {
           },
           { signal: controller.signal },
         );
+        
+        // 将当前角色的回答添加到对话记录中，供后续角色参考
+        conversationItems.push({ speakerName: role.name, content: roleReply });
       }
 
       setCanvasConsensus((prev) => {
@@ -661,6 +1353,29 @@ const Home = () => {
         return next.slice(-6);
       });
       setCanvasUpdatedAt(new Date().toLocaleString());
+
+      if (stage === 'brief' && !controller.signal.aborted) {
+        const nextRound = autoRoundCount + 1;
+        setAutoRoundCount(nextRound);
+
+        const reachedMaxRound = nextRound >= maxDialogueRounds;
+        const checkResult = await evaluateExpectedResultReached(buildTranscript(conversationItems), nextRound);
+        const reachedExpectedResult = checkResult.reached;
+        const convergeMsg = promptTemplates.prompt_converge_trigger || '我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。';
+
+        if (reachedExpectedResult) {
+          message.success('已达到期望结果，自动停止脑暴并生成最终方案');
+          setRoundtableStage('final');
+          setPendingAutoSend({ roomId, text: convergeMsg, stage: 'final' });
+        } else if (reachedMaxRound) {
+          message.warning('已达到对话轮数上限，自动停止脑暴并生成最终方案');
+          setRoundtableStage('final');
+          setPendingAutoSend({ roomId, text: convergeMsg, stage: 'final' });
+        } else if (autoConversationEnabled) {
+          const nextPrompt = checkResult.nextPrompt || `请继续围绕期望结果推进，当前仍未收敛。${checkResult.reason ? `参考：${checkResult.reason}` : ''}`;
+          setPendingAutoSend({ roomId, text: nextPrompt, stage: 'brief' });
+        }
+      }
     } catch (err) {
       if (!controller.signal.aborted) {
         const msg = err instanceof Error ? err.message : '请求失败';
@@ -682,6 +1397,12 @@ const Home = () => {
     sending,
     systemPrompt,
     userPrompt,
+    autoRoundCount,
+    maxDialogueRounds,
+    evaluateExpectedResultReached,
+    promptTemplates.prompt_converge_trigger,
+    roomId,
+    autoConversationEnabled,
   ]);
 
   useEffect(() => {
@@ -691,13 +1412,13 @@ const Home = () => {
     if (!roomReady || roomId !== pendingAutoSend.roomId) {
       return;
     }
-    if (sending || messages.length > 0) {
+    if (sending) {
       return;
     }
     setPendingAutoSend(null);
     setUserPrompt('');
-    void sendToRoundtable(pendingAutoSend.text, 'brief');
-  }, [messages.length, pendingAutoSend, roomId, roomReady, sending, sendToRoundtable]);
+    void sendToRoundtable(pendingAutoSend.text, pendingAutoSend.stage);
+  }, [pendingAutoSend, roomId, roomReady, sending, sendToRoundtable]);
 
   const generateFinalPlan = () => {
     if (!roomReady) {
@@ -708,6 +1429,8 @@ const Home = () => {
       message.warning('正在生成中，请稍候或点击停止');
       return;
     }
+    setPendingAutoSend(null);
+    setAutoConversationEnabled(false);
     setRoundtableStage('final');
     const convergeMsg = promptTemplates.prompt_converge_trigger || '我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。';
     void sendToRoundtable(convergeMsg, 'final');
@@ -716,7 +1439,9 @@ const Home = () => {
   const canGoRoles = intentReady;
 
   return (
-    <Layout style={{ minHeight: '100dvh', overflow: 'hidden' }}>
+    <>
+      <style dangerouslySetInnerHTML={{ __html: listItemStyle }} />
+      <Layout style={{ minHeight: '100dvh', overflow: 'hidden' }}>
       <AppHeader
         models={models}
         loadingModels={loadingModels}
@@ -742,54 +1467,145 @@ const Home = () => {
           <div style={{ maxHeight: 'calc(100dvh - 64px - 80px)', overflowY: 'auto' }}>
             <List
               dataSource={roundtableRooms}
-              renderItem={(room) => (
-                <List.Item
-                  key={room.id}
-                  onClick={() => selectRoundtableRoom(room)}
-                  style={{
-                    padding: '12px 16px',
-                    cursor: 'pointer',
-                    background: roomId === room.id ? '#e6f7ff' : 'transparent',
-                  }}
-                  actions={[
-                    <Button
-                      key="edit"
-                      type="text"
-                      size="small"
-                      onClick={(e) => startEditingRoomName(room.id, e)}
-                    >
-                      编辑
-                    </Button>,
-                    <Button
-                      key="delete"
-                      type="text"
-                      size="small"
-                      danger
-                      onClick={(e) => deleteRoundtableRoom(room.id, e)}
-                    >
-                      删除
-                    </Button>,
-                  ]}
-                >
-                  <List.Item.Meta
-                    title={
-                      editingRoomId === room.id ? (
-                        <Input
-                          defaultValue={room.name}
+              renderItem={(room) => {
+                const isSelected = roomId === room.id;
+                const roomIndex = roundtableRooms.findIndex((item) => item.id === room.id) + 1;
+                
+                return (
+                  <List.Item
+                    key={room.id}
+                    onClick={() => selectRoundtableRoom(room)}
+                    className={`roundtable-list-item ${isSelected ? 'selected' : ''}`}
+                    style={{
+                      padding: '12px 16px',
+                      cursor: 'pointer',
+                      background: isSelected ? 'linear-gradient(135deg, #f0f7ff 0%, #e6f7ff 100%)' : '#fff',
+                      borderLeft: isSelected ? '4px solid #1677ff' : '4px solid transparent',
+                      marginBottom: 8,
+                      borderRadius: 12,
+                      border: isSelected ? '1px solid #bae0ff' : '1px solid #f0f0f0',
+                      boxShadow: isSelected 
+                        ? '0 2px 8px rgba(22, 119, 255, 0.12)' 
+                        : '0 1px 3px rgba(0, 0, 0, 0.04)',
+                      transition: 'all 0.2s ease-in-out',
+                    }}
+                    actions={[
+                      <Dropdown
+                        key="settings"
+                        menu={{
+                          items: [
+                            {
+                              key: 'edit',
+                              label: '编辑空间名称',
+                              icon: <span style={{ fontSize: 12, color: '#1677ff' }}>✏️</span>,
+                              onClick: (e) => {
+                                e.domEvent.stopPropagation();
+                                const mouseEvent = e.domEvent as React.MouseEvent;
+                                startEditingRoomName(room.id, mouseEvent);
+                              },
+                            },
+                            {
+                              key: 'delete',
+                              label: '删除空间',
+                              icon: <span style={{ fontSize: 12, color: '#ff4d4f' }}>🗑️</span>,
+                              danger: true,
+                              onClick: (e) => {
+                                e.domEvent.stopPropagation();
+                                const mouseEvent = e.domEvent as React.MouseEvent;
+                                deleteRoundtableRoom(room.id, mouseEvent);
+                              },
+                            },
+                          ],
+                        }}
+                        trigger={['click']}
+                        placement="bottomRight"
+                      >
+                        <Button
+                          type="text"
                           size="small"
-                          onBlur={(e) => saveRoomName(room.id, e.target.value)}
-                          onPressEnter={(e) => saveRoomName(room.id, e.currentTarget.value)}
-                          autoFocus
+                          style={{
+                            padding: '0',
+                            fontSize: 16,
+                            height: 24,
+                            width: 24,
+                            minWidth: 24,
+                            color: isSelected ? '#1677ff' : '#8c8c8c',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            borderRadius: 4,
+                            transition: 'all 0.2s ease-in-out',
+                          }}
                           onClick={(e) => e.stopPropagation()}
-                        />
-                      ) : (
-                        <Text ellipsis style={{ maxWidth: 160 }}>{room.name}</Text>
-                      )
-                    }
-                    description={<Text type="secondary" style={{ fontSize: 11 }}>{room.createdAt}</Text>}
-                  />
-                </List.Item>
-              )}
+                          className="roundtable-settings-button"
+                        >
+                          <span style={{ 
+                            fontSize: 20,
+                            lineHeight: 1,
+                            transform: 'translateY(-2px)',
+                            fontWeight: 500,
+                          }}>⋯</span>
+                        </Button>
+                      </Dropdown>,
+                    ]}
+                  >
+                    <List.Item.Meta
+                      title={
+                        editingRoomId === room.id ? (
+                          <Input
+                            defaultValue={room.name}
+                            size="small"
+                            onBlur={(e) => saveRoomName(room.id, e.target.value)}
+                            onPressEnter={(e) => saveRoomName(room.id, e.currentTarget.value)}
+                            autoFocus
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ width: '100%' }}
+                          />
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                            <div style={{
+                              width: 24,
+                              height: 24,
+                              borderRadius: 6,
+                              background: isSelected ? '#1677ff' : '#f0f0f0',
+                              color: isSelected ? '#fff' : '#8c8c8c',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              flexShrink: 0,
+                            }}>
+                              #{roomIndex}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div
+                                style={{
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  fontSize: 14,
+                                  fontWeight: 600,
+                                  lineHeight: 1.4,
+                                  color: isSelected ? '#1677ff' : '#262626',
+                                }}
+                              >
+                                {formatRoomDisplayName(room, roomIndex - 1)}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      }
+                      description={
+                        <div style={{ marginTop: 4 }}>
+                          
+                        </div>
+                      }
+                    />
+                  </List.Item>
+                );
+              }}
             />
           </div>
         </Sider>
@@ -811,16 +1627,12 @@ const Home = () => {
                       <Space>
                         <Button 
                           onClick={() => {
-                            const sampleContent = `我想开发'小秘'，一款本地优先、隐私主权的开源个人 AI 管家。
-
-核心逻辑：必须支持包括语音、拍照、截图、即时消息转发、文档解析等 8 种媒介的零门槛输入。其底层通过分级 AI 架构 (Hybrid AI) 运行，在确保端侧轻量化处理的同时，通过智能知识索引引擎，将碎片化的信息自动转化为可行动的任务与动态关联的个人第二大脑。
-
-硬性约束：
-1. 隐私至上：所有 RAG 索引、结构化数据和 SQLite 数据库必须默认存储在本地，支持自建 WebDAV 或 E2EE 加密同步，确保用户数据的绝对所有权。
-2. 收件箱缓冲机制：拒绝'任务垃圾场'。所有 AI 解析的内容需进入待确认区，通过类似的高效率交互由用户确认为任务、知识或忽略，维护日程的严肃性。
-3. 免打扰主动管理：具备情境感知能力，仅在合适的时间窗口进行批量汇总提醒，而非无休止的即时打扰。
-
-痛点场景：彻底解决我每天在微信截图、语音随笔、网页剪藏与工作邮件之间反复横跳、碎片信息无法结构化统一管理的焦虑。它能从一张活动海报中自动提取时间地点，也能在我要开会前，自动联想并推送出存储在本地的相关项目文档。`;
+                            const sampleContent = `“小秘”：你的隐私优先、全感官个人 AI 管家
+核心理念：将碎片信息转化为有序智慧，打造属于你的“数字第二大脑”。
+• 零门槛全能录入：支持语音、截图、文档、即时消息等 8 种媒介，随手拍、随口说、随心存，彻底打破应用间的“信息孤岛”。
+• 隐私主权架构：坚持“本地优先”，所有 RAG 索引与数据库均存于本地，支持端侧轻量化运行。你的数据，只有你拥有。
+• 反焦虑缓冲机制：首创“收件箱缓冲区”，AI 解析的内容需经你确认才进入日程或知识库，拒绝任务堆积，维护生活的秩序感。
+• 情境感知助手：它懂你的节奏。平日里它是静默的守门人，在开会前或关键时刻，它会精准推送关联文档与任务汇总，化碎片为行动。`;
                             setInitialDemand(sampleContent);
                           }}
                         >
@@ -834,6 +1646,8 @@ const Home = () => {
                             setProbeQuestions([]);
                             setProbeTurns([]);
                             setIntentCard({ coreGoal: '', constraints: '', painPoints: '' });
+                            setExpectedResult('');
+                            setAutoRoundCount(0);
                             setIntentReady(false);
                             setRolesReady(false);
                             setRoomReady(false);
@@ -913,33 +1727,67 @@ const Home = () => {
                   </Card>
                 </Col>
                 <Col xs={24} xl={10}>
-                  <Card title="结构化需求卡片（可编辑）" style={{ borderRadius: 8 }}>
-                    <Form
-                      form={form}
-                      layout="vertical"
-                      initialValues={intentCard}
-                      onValuesChange={(_, values) => setIntentCard(values as IntentCardState)}
-                    >
-                      <Form.Item
-                        name="coreGoal"
-                        label="核心目标"
-                        rules={[{ required: true, message: '请填写核心目标' }]}
-                      >
-                        <Input placeholder="例：在两周内验证产品方向并形成可执行方案" />
-                      </Form.Item>
-                      <Form.Item name="constraints" label="限制条件">
-                        <Input placeholder="例：预算有限；人手少；需合规" />
-                      </Form.Item>
-                      <Form.Item name="painPoints" label="待解决痛点">
-                        <Input placeholder="例：方向跑偏；落地成本高；结果不可量化" />
-                      </Form.Item>
-                      <Space>
-                        <Button type="primary" onClick={confirmIntent}>
-                          确认意图并进入角色矩阵
-                        </Button>
+                  <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                    <Card title="期望结果" style={{ borderRadius: 8 }}>
+                      <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                        <Input.TextArea
+                          rows={4}
+                          value={expectedResult}
+                          onChange={(e) => setExpectedResult(e.target.value)}
+                          placeholder="填写希望这次圆桌讨论最终达到的结果。可由AI基于意图洞察自动生成，再手动微调。"
+                        />
+                        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                          <Button
+                            loading={generatingExpectedResult}
+                            onClick={async () => {
+                              const values = await form.validateFields();
+                              setGeneratingExpectedResult(true);
+                              try {
+                                const generated = await generateExpectedResultByIntent(values as IntentCardState);
+                                setExpectedResult(generated);
+                                message.success('已生成期望结果');
+                              } finally {
+                                setGeneratingExpectedResult(false);
+                              }
+                            }}
+                          >
+                            AI生成期望结果
+                          </Button>
+                          <Space>
+                            <Text type="secondary">对话轮数上限</Text>
+                            <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => setMaxDialogueRounds(Number(v || 6))} />
+                          </Space>
+                        </Space>
                       </Space>
-                    </Form>
-                  </Card>
+                    </Card>
+                    <Card title="结构化需求卡片（可编辑）" style={{ borderRadius: 8 }}>
+                      <Form
+                        form={form}
+                        layout="vertical"
+                        initialValues={intentCard}
+                        onValuesChange={(_, values) => setIntentCard(values as IntentCardState)}
+                      >
+                        <Form.Item
+                          name="coreGoal"
+                          label="核心目标"
+                          rules={[{ required: true, message: '请填写核心目标' }]}
+                        >
+                          <Input placeholder="例：在两周内验证产品方向并形成可执行方案" />
+                        </Form.Item>
+                        <Form.Item name="constraints" label="限制条件">
+                          <Input placeholder="例：预算有限；人手少；需合规" />
+                        </Form.Item>
+                        <Form.Item name="painPoints" label="待解决痛点">
+                          <Input placeholder="例：方向跑偏；落地成本高；结果不可量化" />
+                        </Form.Item>
+                        <Space>
+                          <Button type="primary" onClick={confirmIntent} loading={generatingExpectedResult}>
+                            确认意图并进入角色矩阵
+                          </Button>
+                        </Space>
+                      </Form>
+                    </Card>
+                  </Space>
                 </Col>
               </Row>
             )}
@@ -1070,6 +1918,14 @@ const Home = () => {
                         <Text strong>意图锚点</Text>
                         <Paragraph style={{ marginBottom: 0 }}>{intentCard.coreGoal || '-'}</Paragraph>
                       </Card>
+                      <Card size="small">
+                        <Text strong>期望结果</Text>
+                        <Paragraph style={{ marginBottom: 0 }}>{expectedResult || '-'}</Paragraph>
+                      </Card>
+                      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                        <Text>对话轮数上限</Text>
+                        <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => setMaxDialogueRounds(Number(v || 6))} />
+                      </Space>
                       <Space style={{ width: '100%', justifyContent: 'space-between' }}>
                         <Text>群聊模式（多角色脑暴）</Text>
                         <Switch checked={autoBrainstorm} onChange={(v) => setAutoBrainstorm(v)} />
@@ -1148,9 +2004,9 @@ const Home = () => {
             </Modal>
 
             {step === 'roundtable_view' && (
-              <Row gutter={16} style={{ height: '100%', overflow: 'hidden' }}>
+              <Row gutter={16} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                 {/* 左侧：对话流 */}
-                <Col xs={24} xl={17} style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%', overflow: 'hidden' }}>
+                <Col xs={24} xl={17} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' }}>
                   <Card
                     title={
                       <Space>
@@ -1158,12 +2014,12 @@ const Home = () => {
                         <Tag>{messages.length}</Tag>
                       </Space>
                     }
-                    style={{ borderRadius: 8, flex: 1, display: 'flex', flexDirection: 'column' }}
-                    bodyStyle={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+                    style={{ borderRadius: 8, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+                    bodyStyle={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
                   >
                     {!roomReady && <Empty description="请先完成意图洞察与角色确认" />}
                     {roomReady && (
-                      <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 16px' }}>
+                      <div style={{ flex: 1, minHeight: 0, maxHeight: 'calc(100vh - 350px)', overflowY: 'auto', padding: '0 16px 16px', overflowX: 'hidden' }}>
                         {messages.length === 0 && <Empty description="暂无讨论内容，先在底部输入并发送" />}
                         <List
                           dataSource={messages}
@@ -1212,13 +2068,17 @@ const Home = () => {
                 </Col>
 
                 {/* 右侧：共识摘要 + 对话控制（占30%） */}
-                <Col xs={24} xl={7} style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%', overflow: 'hidden' }}>
+                <Col xs={24} xl={7} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' }}>
                   {/* 共识摘要 */}
-                  <Card title="共识摘要" style={{ borderRadius: 8, flex: 1, overflow: 'hidden' }}>
+                  <Card title="共识摘要" style={{ borderRadius: 8, overflow: 'hidden' }} bodyStyle={{ maxHeight: 'calc(100vh - 450px)', overflowY: 'auto' }}>
                     <Space direction="vertical" size={12} style={{ width: '100%' }}>
                       <Card size="small">
                         <Text strong>需求锚点</Text>
                         <Paragraph style={{ marginBottom: 0 }}>{intentCard.coreGoal || '-'}</Paragraph>
+                      </Card>
+                      <Card size="small" style={{ background: '#f6ffed', borderColor: '#95de64' }}>
+                        <Text strong>期望结果</Text>
+                        <Paragraph style={{ marginBottom: 0 }}>{expectedResult || '-'}</Paragraph>
                       </Card>
                       <Card size="small" style={{ background: '#f6ffed', borderColor: '#b7eb8f' }}>
                         <Space>
@@ -1255,6 +2115,17 @@ const Home = () => {
                         <Text>群聊模式</Text>
                         <Switch checked={autoBrainstorm} onChange={(v) => setAutoBrainstorm(v)} />
                       </Space>
+                      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                        <Text>对话轮数上限</Text>
+                        <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => setMaxDialogueRounds(Number(v || 6))} />
+                      </Space>
+                      <Text type="secondary">当前轮次：{autoRoundCount}/{maxDialogueRounds}</Text>
+                      <Input.TextArea
+                        rows={3}
+                        value={expectedResult}
+                        onChange={(e) => setExpectedResult(e.target.value)}
+                        placeholder="可在对话中修改期望结果，后续自动收敛将按新目标继续。"
+                      />
                       <Space wrap>
                         <Button type="primary" disabled={!roomReady || sending || messages.length === 0} onClick={generateFinalPlan}>
                           生成最终方案
@@ -1266,6 +2137,9 @@ const Home = () => {
                             setCanvasDisputes([]);
                             setCanvasUpdatedAt(new Date().toLocaleString());
                             setRoundtableStage('brief');
+                            setAutoRoundCount(0);
+                            setPendingAutoSend(null);
+                            setAutoConversationEnabled(false);
                           }}
                         >
                           清空讨论
@@ -1282,53 +2156,23 @@ const Home = () => {
 
             {/* 创意画布独立页面 */}
             {step === 'canvas_view' && (
-              <div style={{ padding: 16 }}>
-                <Card
-                  title={
-                    <Space>
-                      <span>创意画布</span>
-                      <Tag color="blue">实时</Tag>
-                    </Space>
-                  }
-                  style={{ borderRadius: 8, minHeight: 'calc(100dvh - 64px - 80px)' }}
-                >
-                  <RoundtableCanvas
-                    key={roomId || 'default'}
-                    roomId={roomId}
-                    intentAnchor={intentCard.coreGoal}
-                    messages={messages}
-                    roles={roles}
-                    canvasConsensus={canvasConsensus}
-                    canvasDisputes={canvasDisputes}
-                    canvasUpdatedAt={canvasUpdatedAt}
-                    onConsensusChange={setCanvasConsensus}
-                    onDisputesChange={setCanvasDisputes}
-                    onUpdatedAtChange={setCanvasUpdatedAt}
-                  />
-                </Card>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <RoundtableCanvas
+                  key={roomId || 'default'}
+                  roomId={roomId}
+                  intentAnchor={intentCard.coreGoal}
+                  messages={messages}
+                  roles={roles}
+                  onUpdatedAtChange={setCanvasUpdatedAt}
+                />
               </div>
             )}
           </Content>
 
-          <Footer style={{ background: '#ffffff', borderTop: '1px solid #f0f0f0' }}>
-            {/* 创意画布页面不显示底部内容 */}
-            {step === 'canvas_view' && (
-              <Row justify="space-between" align="middle">
-                <Col>
-                  <Text type="secondary">
-                    创意画布模式 - 仅展示讨论共识，可从圆桌空间发送内容到画布
-                  </Text>
-                </Col>
-                <Col>
-                  <Space>
-                    <Tag color={intentReady ? 'green' : 'default'}>意图洞察 {intentReady ? '已完成' : '未完成'}</Tag>
-                    <Tag color={rolesReady ? 'green' : 'default'}>角色矩阵 {rolesReady ? '已完成' : '未完成'}</Tag>
-                  </Space>
-                </Col>
-              </Row>
-            )}
-            {/* 圆桌空间和查看模式显示状态标签 */}
-            {step !== 'roundtable' && step !== 'canvas_view' && (
+          {step !== 'canvas_view' && (
+            <Footer style={{ background: '#ffffff', borderTop: '1px solid #f0f0f0' }}>
+              {/* 圆桌空间和查看模式显示状态标签 */}
+              {step !== 'roundtable' && (
               <Row justify="space-between" align="middle">
                 <Col>
                   <Text type="secondary">
@@ -1342,14 +2186,14 @@ const Home = () => {
                   </Space>
                 </Col>
               </Row>
-            )}
-            {/* 圆桌空间和查看模式显示输入框 */}
-            {(step === 'roundtable_view') && (
+              )}
+              {/* 圆桌空间和查看模式显示输入框 */}
+              {(step === 'roundtable_view') && (
               <Row gutter={12} align="middle">
                 <Col flex="auto">
                   <Input.TextArea
-                    rows={2}
-                    maxLength={500}
+                    rows={3}
+                    maxLength={1000}
                     showCount
                     value={userPrompt}
                     onChange={(e) => setUserPrompt(e.target.value)}
@@ -1367,12 +2211,13 @@ const Home = () => {
                   </Space>
                 </Col>
               </Row>
-            )}
-          </Footer>
+              )}
+            </Footer>
+          )}
         </Layout>
       </Layout>
     </Layout>
-  );
+    </>  );
 };
 
 export default Home;

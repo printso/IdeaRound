@@ -52,7 +52,7 @@ app = FastAPI(
     title="IdeaRound API",
     description="Backend for IdeaRound: Cognitive Enhancement & Multi-Agent Decision Support System",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # CORS - 支持环境变量配置

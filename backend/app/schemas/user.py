@@ -33,7 +33,7 @@ class RoleResponse(RoleBase):
     """角色响应"""
     id: int
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
     
@@ -102,7 +102,7 @@ class UserResponse(UserBase):
     is_active: bool
     is_superuser: bool
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
     last_login: Optional[datetime] = None
     roles: Optional[List[RoleResponse]] = None
 

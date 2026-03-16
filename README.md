@@ -24,35 +24,23 @@ ideaRound 是一个创新的**多智能体决策支持系统**，通过模拟专
 
 ---
 
-## ✨ 功能特性
-
-### 核心功能
-
-**意图洞察** - 智能问答澄清需求，生成结构化需求卡片
-
-**角色矩阵**
-- 产品策略官：目标拆解、需求路径
-- 技术架构师：可实施性、复杂度评估
-- 增长运营官：转化漏斗、数据指标
-- 黑帽风控官：风险识别、压力测试
-- 审计官：回答质量评审
-
-**圆桌讨论**
-- 简报阶段快速迭代 + 最终阶段深度总结
-- 实时流式输出
-- 共识与分歧可视化
-
-**模型管理**
-- 支持LLM OpenAI Compatible
-- 自定义模型配置
-- 在线聊天测试
-
-### 认证系统
-
-- JWT Token 认证，支持用户注册登录
-- 三级角色权限（admin/user/guest）
-- 可配置启用/禁用认证
-- Token 自动刷新机制
+## ✨ 系统截图
+<div align="center">
+<table>
+<tr>
+<td><img src="./assets/images/角色矩阵.png" alt="角色矩阵" width="100%"/></td>
+<td><img src="./assets/images/角色灵魂配置.png" alt="角色灵魂配置" width="100%"/></td>
+</tr>
+<tr>
+<td><img src="./assets/images/圆桌讨论.png" alt="圆桌讨论" width="100%"/></td>
+<td><img src="./assets/images/方案生成.png" alt="方案生成" width="100%"/></td>
+</tr>
+<tr>
+<td><img src="./assets/images/提示词后台.png" alt="提示词后台" width="100%"/></td>
+<td><img src="./assets/images/系统预设角色管理.png" alt="系统预设角色管理" width="100%"/></td>
+</tr>
+</table>
+</div>
 
 ---
 
@@ -156,35 +144,6 @@ ADMIN_PASSWORD=change-this-password-immediately
 ### 环境要求
 
 - Python 3.9+、Node.js 20+、MySQL 5.7+
-
-### 生产部署
-
-1. **安全配置**
-   ```bash
-   # 生成随机密钥
-   openssl rand -hex 32  # Linux/Mac
-   ```
-
-2. **Nginx 反向代理**
-   ```nginx
-   server {
-       listen 80;
-       server_name your-domain.com;
-
-       location / {
-           proxy_pass http://localhost:5173;
-       }
-
-       location /api/ {
-           proxy_pass http://localhost:15001;
-       }
-   }
-   ```
-
-3. **HTTPS 配置**
-   ```bash
-   sudo certbot --nginx -d your-domain.com
-   ```
 
 ### 常见问题
 
