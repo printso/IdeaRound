@@ -10,7 +10,7 @@
 
 **基于多智能体协作的创意激发与决策支持平台**
 
-[🌐 在线体验](https://ideaground.sokaai.cn) • [快速开始](#-快速开始) • [功能特性](#-功能特性) • [技术架构](#-技术架构) • [部署指南](#-部署指南)
+[🌐 在线体验](<a href="https://trendshift.io/repositories/16144" target="_blank">https://ideaground.sokaai.cn</a>) • [快速开始](#-快速开始) • [功能特性](#-功能特性) • [技术架构](#-技术架构) • [部署指南](#-部署指南)
 
 </div>
 
