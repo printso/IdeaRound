@@ -59,8 +59,8 @@ const LoginPage: React.FC = () => {
           autoComplete="off"
           size="large"
           initialValues={{
-            username: 'admin',
-            password: 'admin123',
+            username: 'demo',
+            password: 'demo123',
           }}
         >
           <Form.Item
@@ -105,6 +105,8 @@ const LoginPage: React.FC = () => {
 
           <div style={{ textAlign: 'center', marginTop: 16 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
+              默认体验账号：demo / demo123
+              <br />
               默认管理员账号：admin / admin123
             </Text>
           </div>
@@ -112,7 +114,7 @@ const LoginPage: React.FC = () => {
 
         <div style={{ marginTop: 24, textAlign: 'center' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            © 2024 圆桌创意 · 多智能体决策支持系统
+            © 2026 圆桌创意 · 多智能体决策支持系统
           </Text>
         </div>
       </Card>
