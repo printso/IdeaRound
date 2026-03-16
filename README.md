@@ -8,17 +8,13 @@
 ![FastAPI](https://img.shields.io/badge/fastapi-0.100+-green.svg)
 ![React](https://img.shields.io/badge/react-18+-green.svg)
 
-**基于多智能体协作的创意激发与决策支持平台**
+**拒绝单一平庸，让思想在碰撞中实现升维**
 
 <a href="https://ideaground.sokaai.cn" target="_blank">🌐 在线体验</a> • [快速开始](#-快速开始) • [功能特性](#-功能特性) • [技术架构](#-技术架构) • [部署指南](#-部署指南)
 
 </div>
 
 ---
-
-# 🚀 ideaRound
-
-**拒绝单一平庸，让思想在碰撞中实现升维**
 
 ideaRound 是一个打破边界的多智能体（Multi-Agent）协同系统。  
 它不直接给出标准答案，而是为你还原一场真实且高级的思想碰撞 —— 召集拥有不同性格内核、专业背景与思维方式的 AI 伙伴，让每一个问题都在深度辩论、情感共鸣与创意重构中被层层打磨、充分淬炼。
