@@ -1,6 +1,10 @@
 import os
 from pydantic_settings import BaseSettings
 from typing import Optional, List
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
 
 class Settings(BaseSettings):
     # 基础配置

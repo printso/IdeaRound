@@ -4,13 +4,13 @@
 
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.9+-green.svg)
-![Node.js](https://img.shields.io/badge/node-16+-green.svg)
+![Node.js](https://img.shields.io/badge/node-20+-green.svg)
 ![FastAPI](https://img.shields.io/badge/fastapi-0.100+-green.svg)
 ![React](https://img.shields.io/badge/react-18+-green.svg)
 
 **拒绝单一平庸，让思想在碰撞中实现升维**
 
-<a href="https://ideaground.sokaai.cn" target="_blank">🌐 在线体验</a> • [快速开始](#-快速开始) • [功能特性](#-功能特性) • [技术架构](#-技术架构) • [部署指南](#-部署指南)
+<a href="https://ideaground.sokaai.cn" target="_blank" rel="noopener noreferrer">🌐 在线体验</a> • <a href="#-快速开始">快速开始</a> • <a href="#-功能特性">功能特性</a> • <a href="#-技术架构">技术架构</a> • <a href="#-部署指南">部署指南</a>
 
 </div>
 
@@ -68,21 +68,20 @@ ideaRound 是一个打破边界的多智能体（Multi-Agent）协同系统。
 
 ## 🚀 快速开始
 
-### 一键启动
+### 环境要求
 
-**Windows:** `start.bat` | **Linux/Mac:** `./start.sh`
+- Python 3.9+、Node.js 20+、MySQL 5.7+
 
-启动后访问：http://localhost:5173
-
-**默认管理员账号**：`admin` / `admin123` （首次登录后请立即修改密码）
-
-### 手动启动
+配置数据库：
+1. 默认为 sqlite，若需 mysql，需修改 `.env` 中数据库配置
+2. 首次启动前
+    - 如果是 sqlite，需把 configs 里的 `idearound.db` 复制到 backend 目录下
+    - 如果是 mysql，需先创建数据库，修改 `.env` 中数据库配置，然后导入 `configs/idearound.sql` 初始化数据库
 
 ```bash
 # 后端
 cd backend
 pip install -r requirements.txt
-python init_db.py && python init_auth.py
 uvicorn app.main:app --reload --port 15001
 
 # 前端
@@ -90,6 +89,10 @@ cd frontend
 npm install
 npm run dev
 ```
+
+启动后访问：http://localhost:5173
+
+**默认管理员账号**：`admin` / `admin123` （首次登录后请立即修改密码）
 
 ---
 
@@ -117,7 +120,7 @@ ideaRound/
 │   │   ├── core/     # 核心配置
 │   │   ├── models/   # 数据模型
 │   │   └── schemas/  # Pydantic Schema
-│   ├── configs/      # 配置文件
+│   ├── configs/      # 配置文件，包含数据库初始化脚本
 │   └── init_*.py     # 初始化脚本
 ├── frontend/         # React 前端
 │   └── src/
@@ -125,7 +128,6 @@ ideaRound/
 │       ├── contexts/    # Context
 │       ├── pages/       # 页面
 │       └── api/         # API 调用
-└── start.sh/bat      # 启动脚本
 ```
 
 ---
@@ -136,19 +138,6 @@ ideaRound/
 
 复制 `.env.example` 到 `.env`：
 
-```bash
-# 数据库
-MYSQL_ROOT_PASSWORD=secure-password
-MYSQL_USER=idearound
-MYSQL_PASSWORD=your-secure-db-password
-
-# 认证
-JWT_SECRET_KEY=random-secret-key-min-32-chars
-AUTH_ENABLED=true
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-this-password-immediately
-```
-
 ### 认证配置
 
 | 角色 | 权限 |
@@ -156,26 +145,6 @@ ADMIN_PASSWORD=change-this-password-immediately
 | admin | 所有权限 |
 | user | 工作台、聊天、模型管理 |
 | guest | 工作台只读 |
-
-**禁用认证**：修改 `.env` 中的 `AUTH_ENABLED=false`，重启后端
-
----
-
-## 📋 部署指南
-
-### 环境要求
-
-- Python 3.9+、Node.js 20+、MySQL 5.7+
-
-### 常见问题
-
-| 问题 | 解决方案 |
-|------|----------|
-| 忘记密码 | 重新运行 `init_auth.py` |
-| 禁用认证 | 设置 `AUTH_ENABLED=false` |
-| Token 过期 | 前端自动刷新，过期则重新登录 |
-
----
 
 ## 📄 许可证
 

@@ -56,7 +56,7 @@ app = FastAPI(
 )
 
 # CORS - 支持环境变量配置
-cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+cors_origins = settings.cors_origins_list
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,

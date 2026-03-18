@@ -105,9 +105,9 @@ const LoginPage: React.FC = () => {
 
           <div style={{ textAlign: 'center', marginTop: 16 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              默认体验账号：demo / demo123
-              <br />
               默认管理员账号：admin / admin123
+              <br />
+              默认体验账号：demo / demo123              
             </Text>
           </div>
         </Form>
