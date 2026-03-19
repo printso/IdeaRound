@@ -1,9 +1,9 @@
 from fastapi import APIRouter
 
 try:
-    from backend.app.api.v1.endpoints import prompts, llm, style_configs, role_templates, roundtable_configs, auth, users, workspaces
+    from backend.app.api.v1.endpoints import prompts, llm, style_configs, role_templates, roundtable_configs, auth, users, workspaces, materials
 except ImportError:
-    from app.api.v1.endpoints import prompts, llm, style_configs, role_templates, roundtable_configs, auth, users, workspaces
+    from app.api.v1.endpoints import prompts, llm, style_configs, role_templates, roundtable_configs, auth, users, workspaces, materials
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["用户认证"])
@@ -14,4 +14,5 @@ api_router.include_router(style_configs.router, prefix="/style-configs", tags=["
 api_router.include_router(role_templates.router, prefix="/role-templates", tags=["角色模板管理"])
 api_router.include_router(roundtable_configs.router, prefix="/roundtable-configs", tags=["圆桌配置管理"])
 api_router.include_router(workspaces.router, prefix="/workspaces", tags=["工作台管理"])
+api_router.include_router(materials.router, prefix="/materials", tags=["材料管理"])
 # api_router.include_router(chat.router, prefix="/chat", tags=["chat"])

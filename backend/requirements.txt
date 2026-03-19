@@ -11,6 +11,11 @@ openai # For LLM calls
 python-docx # Since we already used it, might as well keep it if we need to parse uploaded docs later.
 aiosqlite
 pydantic[email]
+aiofiles # For async file operations
+python-magic # For MIME type detection
+PyPDF2 # For PDF parsing
+Pillow # For image processing
+pytesseract # For OCR
 
 # 认证相关
 python-jose[cryptography]  # JWT

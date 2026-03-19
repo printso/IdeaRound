@@ -8,6 +8,7 @@ try:
     from backend.app.models.role_template import RoleTemplate
     from backend.app.models.roundtable_config import RoundtableConfig
     from backend.app.models.user import User, Role, UserConfig
+    from backend.app.models.material import Material
 except ImportError:
     from app.models.prompt import SysPrompt
     from app.models.bot import Bot
@@ -18,3 +19,4 @@ except ImportError:
     from app.models.role_template import RoleTemplate
     from app.models.roundtable_config import RoundtableConfig
     from app.models.user import User, Role, UserConfig
+    from app.models.material import Material

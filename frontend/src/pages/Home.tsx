@@ -26,6 +26,9 @@ import { getLLMConfigs, streamChatByLLMConfig } from '../api/llm';
 import type { LLMConfig } from '../api/llm';
 import AppHeader from '../components/AppHeader';
 import RoundtableCanvas from '../components/RoundtableCanvas';
+import MaterialUploader from '../components/MaterialUploader';
+import MaterialIntentSynthesis from '../components/MaterialIntentSynthesis';
+import ConsensusSummary from '../components/ConsensusSummary';
 import {
   createWorkspace,
   listWorkspaces,
@@ -45,7 +48,7 @@ type IntentCardState = {
   painPoints: string;
 };
 
-type StepKey = 'roundtable' | 'roles' | 'roundtable_view' | 'canvas_view';
+type StepKey = 'roundtable' | 'roles' | 'roundtable_view' | 'consensus_summary' | 'canvas_view';
 
 type RoundtableRoom = {
   id: string;
@@ -200,6 +203,8 @@ const Home = () => {
   const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>(savedState?.roundtableStage || 'brief');
   const [pendingAutoSend, setPendingAutoSend] = useState<{ roomId: string; text: string; stage: RoundtableStage } | null>(null);
   const [expectedResult, setExpectedResult] = useState(savedState?.expectedResult || '');
+  const [uploadedMaterials, setUploadedMaterials] = useState<import('../api/material').MaterialInfo[]>([]);
+  const [preUploadRoomId] = useState<string>(`pre_${Date.now().toString(36)}`);
   const [generatingExpectedResult, setGeneratingExpectedResult] = useState(false);
   const [maxDialogueRounds, setMaxDialogueRounds] = useState<number>(savedState?.maxDialogueRounds || 6);
   const [autoRoundCount, setAutoRoundCount] = useState<number>(savedState?.autoRoundCount || 0);
@@ -1615,16 +1620,37 @@ ${userText}
             {step === 'roundtable' && (
               <Row gutter={16}>
                 <Col xs={24} xl={14}>
-                  <Card title="意图洞察交互" style={{ borderRadius: 8 }}>
+                  <Card title="需求识别交互" style={{ borderRadius: 8 }}>
                     <div style={{ maxHeight: 'calc(100dvh - 64px - 140px)', overflowY: 'auto', paddingRight: 8 }}>
                       <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                      <Input.TextArea
-                        rows={3}
-                        value={initialDemand}
-                        onChange={(e) => setInitialDemand(e.target.value)}
-                        placeholder="请简要描述你的需求（回车后不会立即建群，而是先澄清意图）"
-                      />
-                      <Space>
+                        <Input.TextArea
+                          rows={3}
+                          value={initialDemand}
+                          onChange={(e) => setInitialDemand(e.target.value)}
+                          placeholder="请简要描述你的需求（回车后不会立即建群，而是先澄清意图）"
+                        />
+                        <MaterialUploader
+                          roomId={roomId || preUploadRoomId}
+                          onMaterialsAnalyzed={setUploadedMaterials}
+                          maxFiles={10}
+                        />
+                        {uploadedMaterials.length > 0 && (
+                          <MaterialIntentSynthesis
+                            roomId={roomId || preUploadRoomId}
+                            materials={uploadedMaterials}
+                            onIntentSynthesized={(result) => {
+                              if (result.synthesized_intent.core_goal && !intentCard.coreGoal) {
+                                setIntentCard(prev => ({
+                                  ...prev,
+                                  coreGoal: result.synthesized_intent.core_goal,
+                                  constraints: result.synthesized_intent.constraints || prev.constraints,
+                                  painPoints: result.synthesized_intent.pain_points || prev.painPoints,
+                                }));
+                              }
+                            }}
+                          />
+                        )}
+                        <Space>
                         <Button 
                           onClick={() => {
                             const sampleContent = `“小秘”：你的隐私优先、全感官个人 AI 管家
@@ -1810,7 +1836,7 @@ ${userText}
                     } 
                     style={{ borderRadius: 8 }}
                   >
-                    {!intentReady && <Empty description="请先完成意图洞察" />}
+                    {!intentReady && <Empty description="请先完成需求识别" />}
                     {intentReady && (
                       <Space direction="vertical" size={12} style={{ width: '100%' }}>
                         <Row gutter={[12, 12]}>
@@ -2017,7 +2043,7 @@ ${userText}
                     style={{ borderRadius: 8, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
                     bodyStyle={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
                   >
-                    {!roomReady && <Empty description="请先完成意图洞察与角色确认" />}
+                    {!roomReady && <Empty description="请先完成需求识别与角色确认" />}
                     {roomReady && (
                       <div style={{ flex: 1, minHeight: 0, maxHeight: 'calc(100vh - 350px)', overflowY: 'auto', padding: '0 16px 16px', overflowX: 'hidden' }}>
                         {messages.length === 0 && <Empty description="暂无讨论内容，先在底部输入并发送" />}
@@ -2067,47 +2093,8 @@ ${userText}
                   </Card>
                 </Col>
 
-                {/* 右侧：共识摘要 + 对话控制（占30%） */}
+                {/* 右侧：对话控制（占30%） */}
                 <Col xs={24} xl={7} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' }}>
-                  {/* 共识摘要 */}
-                  <Card title="共识摘要" style={{ borderRadius: 8, overflow: 'hidden' }} bodyStyle={{ maxHeight: 'calc(100vh - 450px)', overflowY: 'auto' }}>
-                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                      <Card size="small">
-                        <Text strong>需求锚点</Text>
-                        <Paragraph style={{ marginBottom: 0 }}>{intentCard.coreGoal || '-'}</Paragraph>
-                      </Card>
-                      <Card size="small" style={{ background: '#f6ffed', borderColor: '#95de64' }}>
-                        <Text strong>期望结果</Text>
-                        <Paragraph style={{ marginBottom: 0 }}>{expectedResult || '-'}</Paragraph>
-                      </Card>
-                      <Card size="small" style={{ background: '#f6ffed', borderColor: '#b7eb8f' }}>
-                        <Space>
-                          <Tag color="green">已达成共识</Tag>
-                          <Text type="secondary">({canvasConsensus.length} 项)</Text>
-                        </Space>
-                        <List
-                          size="small"
-                          dataSource={canvasConsensus}
-                          locale={{ emptyText: '暂无共识' }}
-                          renderItem={(text) => <List.Item style={{ border: 'none', padding: '4px 0' }}>{text}</List.Item>}
-                        />
-                      </Card>
-                      <Card size="small" style={{ background: '#fffbe6', borderColor: '#ffe58f' }}>
-                        <Space>
-                          <Tag color="gold">遗留争议</Tag>
-                          <Text type="secondary">({canvasDisputes.length} 项)</Text>
-                        </Space>
-                        <List
-                          size="small"
-                          dataSource={canvasDisputes}
-                          locale={{ emptyText: '暂无争议' }}
-                          renderItem={(text) => <List.Item style={{ border: 'none', padding: '4px 0' }}>{text}</List.Item>}
-                        />
-                      </Card>
-                      <Text type="secondary">更新时间：{canvasUpdatedAt || '-'}</Text>
-                    </Space>
-                  </Card>
-
                   {/* 对话控制 */}
                   <Card title="对话控制" style={{ borderRadius: 8 }}>
                     <Space direction="vertical" size={10} style={{ width: '100%' }}>
@@ -2150,8 +2137,52 @@ ${userText}
                       </Space>
                     </Space>
                   </Card>
+
+                  {/* 共识摘要预览 */}
+                  <Card
+                    title={
+                      <Space>
+                        <span>共识摘要</span>
+                        <Tag color="green">{canvasConsensus.length} 项</Tag>
+                      </Space>
+                    }
+                    extra={
+                      <Button type="link" size="small" onClick={() => setStep('consensus_summary')}>
+                        查看全部
+                      </Button>
+                    }
+                    style={{ borderRadius: 8, overflow: 'hidden' }}
+                    bodyStyle={{ maxHeight: 'calc(100vh - 600px)', overflowY: 'auto' }}
+                  >
+                    <List
+                      size="small"
+                      dataSource={canvasConsensus.slice(0, 3)}
+                      locale={{ emptyText: '暂无共识' }}
+                      renderItem={(text) => (
+                        <List.Item style={{ border: 'none', padding: '8px 0' }}>
+                          <Text ellipsis>{text}</Text>
+                        </List.Item>
+                      )}
+                    />
+                  </Card>
                 </Col>
               </Row>
+            )}
+
+            {/* 共识摘要独立页面 */}
+            {step === 'consensus_summary' && (
+              <ConsensusSummary
+                intentCard={intentCard}
+                expectedResult={expectedResult}
+                messages={messages}
+                roles={roles}
+                canvasConsensus={canvasConsensus}
+                canvasDisputes={canvasDisputes}
+                canvasUpdatedAt={canvasUpdatedAt}
+                roundtableStage={roundtableStage}
+                maxDialogueRounds={maxDialogueRounds}
+                autoRoundCount={autoRoundCount}
+              />
             )}
 
             {/* 创意画布独立页面 */}
@@ -2171,7 +2202,7 @@ ${userText}
 
           {step !== 'canvas_view' && (
             <Footer style={{ background: '#ffffff', borderTop: '1px solid #f0f0f0' }}>
-              {/* 圆桌空间和查看模式显示状态标签 */}
+              {/* 圆桌空间显示状态标签 */}
               {step !== 'roundtable' && (
               <Row justify="space-between" align="middle">
                 <Col>
@@ -2187,7 +2218,7 @@ ${userText}
                 </Col>
               </Row>
               )}
-              {/* 圆桌空间和查看模式显示输入框 */}
+              {/* 圆桌空间显示输入框 */}
               {(step === 'roundtable_view') && (
               <Row gutter={12} align="middle">
                 <Col flex="auto">

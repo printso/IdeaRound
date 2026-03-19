@@ -43,10 +43,11 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   }));
 
   const workspaceMenuItems = [
-    { key: 'roundtable', label: '🗣️ 圆桌空间' },
+    { key: 'roundtable', label: '🗣️ 需求识别' },
     { key: 'roles', label: '👥 角色矩阵', disabled: !canGoRoles },
-    { key: 'roundtable_view', label: '💬 查看模式', disabled: !canGoRoles },
-    { key: 'canvas_view', label: '🎨 创意画布', disabled: !canGoRoles },
+    { key: 'roundtable_view', label: '💬 圆桌空间', disabled: !canGoRoles },
+    { key: 'consensus_summary', label: '📋 共识摘要', disabled: !canGoRoles },
+    { key: 'canvas_view', label: '🎨 共识画布', disabled: !canGoRoles },
   ];
 
   return (
