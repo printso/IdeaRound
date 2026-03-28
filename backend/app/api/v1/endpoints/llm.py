@@ -110,3 +110,82 @@ async def stream_chat_by_llm_config(
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@router.post("/{config_id}/chat/sync")
+async def sync_chat_by_llm_config(
+    config_id: int,
+    body: LLMChatStreamRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    非流式调用大模型接口（用于后台裁判、意图分析等隐式任务）
+    """
+    result = await db.execute(select(LLMConfig).where(LLMConfig.id == config_id, LLMConfig.is_active.is_(True)))
+    llm_config = result.scalars().first()
+    if not llm_config:
+        raise HTTPException(status_code=404, detail="LLM Config not found or inactive")
+
+    if not llm_config.api_key:
+        raise HTTPException(status_code=400, detail="API key is required for this model")
+
+    try:
+        client = AsyncOpenAI(api_key=llm_config.api_key, base_url=llm_config.api_base or None)
+        messages = []
+        if body.system_prompt:
+            messages.append({"role": "system", "content": body.system_prompt})
+        messages.append({"role": "user", "content": body.message})
+        
+        response = await client.chat.completions.create(
+            model=llm_config.model_name,
+            messages=messages,
+            temperature=llm_config.temperature,
+            stream=False,
+        )
+        content = response.choices[0].message.content or ""
+        return {"content": content}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@router.post("/{config_id}/chat/judge")
+async def judge_discussion_progress(
+    config_id: int,
+    body: LLMChatStreamRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    专用接口：裁判Agent评估讨论进度
+    返回格式化的 JSON 数据
+    """
+    result = await db.execute(select(LLMConfig).where(LLMConfig.id == config_id, LLMConfig.is_active.is_(True)))
+    llm_config = result.scalars().first()
+    if not llm_config:
+        raise HTTPException(status_code=404, detail="LLM Config not found or inactive")
+
+    if not llm_config.api_key:
+        raise HTTPException(status_code=400, detail="API key is required for this model")
+
+    try:
+        client = AsyncOpenAI(api_key=llm_config.api_key, base_url=llm_config.api_base or None)
+        messages = []
+        if body.system_prompt:
+            messages.append({"role": "system", "content": body.system_prompt})
+        messages.append({"role": "user", "content": body.message})
+        
+        response = await client.chat.completions.create(
+            model=llm_config.model_name,
+            messages=messages,
+            temperature=0.1, # 裁判需要稳定的输出，使用低温度
+            stream=False,
+            response_format={ "type": "json_object" } # 强制输出 JSON
+        )
+        content = response.choices[0].message.content or "{}"
+        
+        try:
+            # 验证是否为有效 JSON
+            json_content = json.loads(content)
+            return json_content
+        except json.JSONDecodeError:
+            return {"score": 0, "reason": "裁判解析失败", "reached": False}
+            
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

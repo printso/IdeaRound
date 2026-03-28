@@ -6,7 +6,6 @@ import {
   Tag,
   List,
   Button,
-  Spin,
   message,
   Collapse,
   Row,
@@ -28,7 +27,7 @@ import {
   type IntentSynthesisResult,
 } from '../api/material';
 
-const { Text, Title, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 
 interface MaterialIntentSynthesisProps {
   roomId: string;

@@ -19,6 +19,8 @@ try:
     from backend.app.models.chat import ChatRoom, Message
     from backend.app.models.canvas import ConsensusCanvas
     from backend.app.models.llm import LLMConfig
+    from backend.app.models.workspace import Workspace
+    from backend.app.models.runtime import RuntimeTask, RuntimeEvent
 except ImportError:
     from app.core.config import settings
     from app.core.database import engine, Base
@@ -35,6 +37,8 @@ except ImportError:
     from app.models.chat import ChatRoom, Message
     from app.models.canvas import ConsensusCanvas
     from app.models.llm import LLMConfig
+    from app.models.workspace import Workspace
+    from app.models.runtime import RuntimeTask, RuntimeEvent
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

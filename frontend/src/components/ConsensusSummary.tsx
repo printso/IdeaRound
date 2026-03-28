@@ -10,14 +10,11 @@ import {
   Button,
   message,
   Avatar,
-  Progress,
-  Statistic,
   Select,
   Tooltip,
 } from 'antd';
 import {
   CheckCircleOutlined,
-  ExclamationCircleOutlined,
   FileTextOutlined,
   TeamOutlined,
   AimOutlined,
@@ -147,10 +144,7 @@ interface ConsensusSummaryProps {
   roles: RoleMember[];
   canvasConsensus: string[];
   canvasDisputes: string[];
-  canvasUpdatedAt: string;
   roundtableStage: 'brief' | 'final';
-  maxDialogueRounds: number;
-  autoRoundCount: number;
 }
 
 const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
@@ -160,20 +154,13 @@ const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
   roles,
   canvasConsensus,
   canvasDisputes,
-  canvasUpdatedAt,
   roundtableStage,
-  maxDialogueRounds,
-  autoRoundCount,
 }) => {
   const [audienceType, setAudienceType] = useState<string>('auto');
   const agentMessages = useMemo(() => messages.filter((m) => m.speakerType === 'agent'), [messages]);
   const uniqueSpeakers = useMemo(
     () => [...new Set(agentMessages.map((m) => m.speakerName))],
     [agentMessages],
-  );
-  const progressPercent = Math.min(
-    Math.round((autoRoundCount / maxDialogueRounds) * 100),
-    100
   );
   const latestRoundAgentMessages = useMemo(() => {
     const collected: Message[] = [];

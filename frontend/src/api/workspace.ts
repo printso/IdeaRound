@@ -65,6 +65,27 @@ export interface WorkspaceData {
   expected_result?: string;
   max_dialogue_rounds?: number;
   auto_round_count?: number;
+  judge_state?: {
+    score?: number;
+    reason?: string;
+    reached?: boolean;
+    consensusCount?: number;
+    resolvedPainPoints?: number;
+    nextFocus?: string;
+    updated_at?: string;
+  };
+  consensus_board?: {
+    summary?: string;
+    consensus?: string[];
+    disputes?: Array<{
+      topic: string;
+      pro: string;
+      con: string;
+    }>;
+    nextQuestions?: string[];
+    updated_at?: string;
+  };
+  canvas_snapshot?: Record<string, unknown> | null;
 }
 
 export interface WorkspaceResponse {

@@ -28,6 +28,7 @@ class MaterialFormat(str, Enum):
     DOC = "doc"
     DOCX = "docx"
     TXT = "txt"
+    MD = "md"
     JPG = "jpg"
     JPEG = "jpeg"
     PNG = "png"

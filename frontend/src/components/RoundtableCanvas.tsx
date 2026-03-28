@@ -88,7 +88,12 @@ type RoundtableCanvasProps = {
   intentAnchor: string;
   messages?: MessageItem[];
   roles?: RoleMember[];
+  expectedResult?: string;
+  canvasConsensus?: string[];
+  roundtableStage?: 'brief' | 'final';
   onUpdatedAtChange?: (text: string) => void;
+  initialSnapshotData?: Record<string, unknown> | null;
+  onSnapshotChange?: (snapshot: Record<string, unknown>) => void;
 };
 
 // 四大核心视觉模块元数据
@@ -159,6 +164,32 @@ const DECISION_OPTIONS: { label: string; value: ConsensusDecision }[] = [
 ];
 
 const RELATION_OPTIONS = ['支持', '补充', '冲突', '前置依赖', '因果影响'];
+const STOP_WORDS = new Set([
+  '我们',
+  '你们',
+  '他们',
+  '这个',
+  '那个',
+  '以及',
+  '进行',
+  '需要',
+  '可以',
+  '已经',
+  '如果',
+  '因为',
+  '关于',
+  '通过',
+  '为了',
+  '当前',
+  '阶段',
+  '讨论',
+  '问题',
+  '方案',
+  '总结',
+  '最终',
+  '目标',
+  '结果',
+]);
 
 const getNowText = () => new Date().toLocaleString();
 
@@ -231,7 +262,18 @@ const buildStarterNodes = (intentAnchor: string): Node<CanvasNodeData>[] => {
   ];
 };
 
-const createInitialSnapshot = (storageKey: string, intentAnchor: string): CanvasSnapshot => {
+const createInitialSnapshot = (
+  storageKey: string,
+  intentAnchor: string,
+  initialSnapshotData?: Record<string, unknown> | null,
+): CanvasSnapshot => {
+  if (initialSnapshotData?.nodes && initialSnapshotData?.edges && initialSnapshotData?.viewport) {
+    try {
+      return initialSnapshotData as unknown as CanvasSnapshot;
+    } catch {
+      //
+    }
+  }
   const saved = localStorage.getItem(storageKey);
   if (saved) {
     try {
@@ -494,10 +536,91 @@ const getStanceColor = (stance: string): ExpertStance => {
 
 const toNodeSafeId = (text: string) => text.replace(/[^a-zA-Z0-9_-]/g, '_');
 
+const normalizeText = (value: string) =>
+  value
+    .replace(/\s+/g, ' ')
+    .replace(/[。！？!?,，；;：:（）()[\]{}"'`]/g, '')
+    .trim();
+
+const extractKeywordCandidates = (text: string) => {
+  const tokens = text.match(/[\u4e00-\u9fa5a-zA-Z0-9]+/g) || [];
+  return Array.from(
+    new Set(
+      tokens
+        .map((item) => item.trim().toLowerCase())
+        .filter((item) => item.length >= 2 && !STOP_WORDS.has(item)),
+    ),
+  ).slice(0, 25);
+};
+
+const extractBulletLikePoints = (content: string) => {
+  const lines = content
+    .split('\n')
+    .map((line) => line.replace(/^[-*+\d.\s]+/, '').trim())
+    .filter(Boolean);
+  return lines.filter((line) => line.length >= 8 && line.length <= 120);
+};
+
+const scoreByIntent = (text: string, keywords: string[], isFinal: boolean) => {
+  const normalized = text.toLowerCase();
+  const hitCount = keywords.filter((keyword) => normalized.includes(keyword)).length;
+  const planBonus = /(路径|行动|里程碑|指标|验证|风险|落地|优先级|时间线)/.test(text) ? 2 : 0;
+  const finalBonus = isFinal ? 3 : 0;
+  return hitCount * 2 + planBonus + finalBonus;
+};
+
+const extractDeliverableFindings = (
+  intentAnchor: string,
+  expectedResult: string,
+  messages: MessageItem[],
+  canvasConsensus: string[],
+  roundtableStage: 'brief' | 'final',
+) => {
+  const keywords = extractKeywordCandidates(`${intentAnchor} ${expectedResult}`);
+  const agentMessages = messages.filter((item) => item.speakerType === 'agent');
+  const candidates: Array<{ text: string; score: number }> = [];
+
+  canvasConsensus.forEach((item) => {
+    candidates.push({
+      text: item,
+      score: scoreByIntent(item, keywords, roundtableStage === 'final'),
+    });
+  });
+
+  agentMessages.slice(-10).forEach((msg) => {
+    extractBulletLikePoints(msg.content).forEach((item) => {
+      candidates.push({
+        text: item,
+        score: scoreByIntent(item, keywords, roundtableStage === 'final'),
+      });
+    });
+  });
+
+  const deduped = new Map<string, { text: string; score: number }>();
+  candidates.forEach((item) => {
+    const key = normalizeText(item.text).toLowerCase();
+    if (!key) {
+      return;
+    }
+    const exist = deduped.get(key);
+    if (!exist || item.score > exist.score) {
+      deduped.set(key, item);
+    }
+  });
+
+  return Array.from(deduped.values())
+    .sort((a, b) => b.score - a.score || b.text.length - a.text.length)
+    .slice(0, 8)
+    .map((item) => item.text);
+};
+
 const buildStructuredGraph = (
   intentAnchor: string,
   messages: MessageItem[],
   roles: RoleMember[],
+  expectedResult: string,
+  canvasConsensus: string[],
+  roundtableStage: 'brief' | 'final',
 ): { nodes: Node<CanvasNodeData>[]; edges: Edge<CanvasEdgeData>[] } => {
   const anchorText = intentAnchor.trim() || '目标待补充';
   const anchorNode: Node<CanvasNodeData> = {
@@ -570,6 +693,13 @@ const buildStructuredGraph = (
   });
 
   const negativeCount = expertNodes.filter((node) => node.data.expertStance === 'negative').length;
+  const deliverableFindings = extractDeliverableFindings(
+    intentAnchor,
+    expectedResult,
+    messages,
+    canvasConsensus,
+    roundtableStage,
+  );
   const relationText = negativeCount > 0 ? `存在 ${negativeCount} 个冲突视角，需重点协调` : '观点总体可兼容，建议合并推进';
   const relationY = startY + (Math.ceil(expertsCount / cols) - 1) * 140 + 190;
   const relationNode: Node<CanvasNodeData> = {
@@ -594,14 +724,40 @@ const buildStructuredGraph = (
     position: { x: 460, y: relationY + 170 },
     data: {
       title: '方案收敛与决策',
-      content: milestoneText,
+      content: deliverableFindings.length > 0 ? `${milestoneText}，已转化 ${deliverableFindings.length} 项可交付成果` : milestoneText,
       owner: '圆桌',
       status: negativeCount > 0 ? 'doing' : 'done',
       decision: negativeCount > 0 ? 'dispute' : 'consensus',
       nodeKind: 'milestone',
-      summary: milestoneText,
+      summary: deliverableFindings.length > 0 ? `已转化 ${deliverableFindings.length} 项可交付成果` : milestoneText,
     },
   };
+
+  const deliverableCols = Math.min(3, Math.max(1, deliverableFindings.length >= 4 ? 3 : 2));
+  const deliverableSpacingX = 260;
+  const deliverableStartX = 460 - ((deliverableCols - 1) * deliverableSpacingX) / 2;
+  const deliverableStartY = relationY + 330;
+  const deliverableNodes: Node<CanvasNodeData>[] = deliverableFindings.map((item, index) => {
+    const row = Math.floor(index / deliverableCols);
+    const col = index % deliverableCols;
+    return {
+      id: `deliverable_${toNodeSafeId(item)}_${index}`,
+      type: 'roundtableNode',
+      position: {
+        x: deliverableStartX + col * deliverableSpacingX,
+        y: deliverableStartY + row * 140,
+      },
+      data: {
+        title: `可交付成果 ${index + 1}`,
+        content: item,
+        owner: '共识摘要',
+        status: 'done',
+        decision: 'consensus',
+        nodeKind: 'consensus',
+        summary: compressText(item, 45),
+      },
+    };
+  });
 
   const edges: Edge<CanvasEdgeData>[] = [];
   expertNodes.forEach((node) => {
@@ -633,9 +789,20 @@ const buildStructuredGraph = (
     label: '收敛决策',
     data: { relation: '收敛决策', label: '收敛决策' },
   });
+  deliverableNodes.forEach((node, index) => {
+    edges.push({
+      id: `edge_milestone_deliverable_${index}`,
+      source: milestoneNode.id,
+      target: node.id,
+      type: 'smoothstep',
+      markerEnd: { type: 'arrowclosed' },
+      label: '成果转化',
+      data: { relation: '成果转化', label: '成果转化' },
+    });
+  });
 
   return {
-    nodes: [anchorNode, ...expertNodes, relationNode, milestoneNode],
+    nodes: [anchorNode, ...expertNodes, relationNode, milestoneNode, ...deliverableNodes],
     edges,
   };
 };
@@ -645,10 +812,15 @@ const RoundtableCanvas = ({
   intentAnchor,
   messages = [],
   roles = [],
+  expectedResult = '',
+  canvasConsensus = [],
+  roundtableStage = 'brief',
   onUpdatedAtChange,
+  initialSnapshotData,
+  onSnapshotChange,
 }: RoundtableCanvasProps) => {
   const storageKey = useMemo(() => `idearound_roundtable_canvas_${roomId || 'default'}`, [roomId]);
-  const [initialSnapshot] = useState<CanvasSnapshot>(() => createInitialSnapshot(storageKey, intentAnchor));
+  const [initialSnapshot] = useState<CanvasSnapshot>(() => createInitialSnapshot(storageKey, intentAnchor, initialSnapshotData));
   const clientIdRef = useRef(createId('client'));
   const channelRef = useRef<BroadcastChannel | null>(null);
   const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -691,8 +863,9 @@ const RoundtableCanvas = ({
     (snapshot: CanvasSnapshot) => {
       localStorage.setItem(storageKey, JSON.stringify(snapshot));
       onUpdatedAtChange?.(snapshot.updatedAt);
+      onSnapshotChange?.(snapshot as unknown as Record<string, unknown>);
     },
-    [onUpdatedAtChange, storageKey],
+    [onSnapshotChange, onUpdatedAtChange, storageKey],
   );
 
   const broadcastSnapshot = useCallback((snapshot: CanvasSnapshot) => {
@@ -761,11 +934,34 @@ const RoundtableCanvas = ({
     [broadcastSnapshot, getSnapshot, persistSnapshot],
   );
 
+  useEffect(() => {
+    if (!initialSnapshotData?.nodes || !initialSnapshotData?.edges || !initialSnapshotData?.viewport) {
+      return;
+    }
+    const incoming = initialSnapshotData as unknown as CanvasSnapshot;
+    if (serializeGraph(nodesRef.current, edgesRef.current) === serializeGraph(incoming.nodes, incoming.edges)) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      syncLockRef.current = true;
+      restoreSnapshot(incoming, { broadcast: false });
+      syncLockRef.current = false;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [initialSnapshotData, restoreSnapshot]);
+
   const applyStructuredLayout = useCallback(() => {
-    const { nodes: structuredNodes, edges: structuredEdges } = buildStructuredGraph(intentAnchor, messages, roles);
+    const { nodes: structuredNodes, edges: structuredEdges } = buildStructuredGraph(
+      intentAnchor,
+      messages,
+      roles,
+      expectedResult,
+      canvasConsensus,
+      roundtableStage,
+    );
     commitGraph(structuredNodes, structuredEdges, { recordHistory: false, broadcast: true, resetFuture: false });
     reactFlowRef.current?.fitView({ padding: 0.16, duration: 200 });
-  }, [commitGraph, intentAnchor, messages, roles]);
+  }, [canvasConsensus, commitGraph, expectedResult, intentAnchor, messages, roles, roundtableStage]);
 
   useEffect(() => {
     applyStructuredLayout();

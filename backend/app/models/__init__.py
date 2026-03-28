@@ -9,6 +9,7 @@ try:
     from backend.app.models.roundtable_config import RoundtableConfig
     from backend.app.models.user import User, Role, UserConfig
     from backend.app.models.material import Material
+    from backend.app.models.scenario_template import ScenarioTemplate
 except ImportError:
     from app.models.prompt import SysPrompt
     from app.models.bot import Bot
@@ -20,3 +21,4 @@ except ImportError:
     from app.models.roundtable_config import RoundtableConfig
     from app.models.user import User, Role, UserConfig
     from app.models.material import Material
+    from app.models.scenario_template import ScenarioTemplate

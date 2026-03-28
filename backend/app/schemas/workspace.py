@@ -42,6 +42,9 @@ class WorkspaceData(BaseModel):
     expected_result: Optional[str] = ""
     max_dialogue_rounds: Optional[int] = 6
     auto_round_count: Optional[int] = 0
+    judge_state: Optional[Dict[str, Any]] = None
+    consensus_board: Optional[Dict[str, Any]] = None
+    canvas_snapshot: Optional[Dict[str, Any]] = None
 
 
 class WorkspaceCreate(BaseModel):

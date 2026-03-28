@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   Upload,
   Button,
@@ -25,10 +25,9 @@ import {
   CloseCircleOutlined,
   InboxOutlined,
 } from '@ant-design/icons';
-import type { UploadFile, UploadProps } from 'antd';
+import type { UploadProps } from 'antd';
 import {
   uploadMaterial,
-  uploadMultipleMaterials,
   deleteMaterial,
   analyzeMaterial,
   getMaterial,
@@ -38,7 +37,7 @@ import {
   type MaterialInfo,
 } from '../api/material';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 interface MaterialUploaderProps {
   roomId: string;
@@ -77,6 +76,10 @@ const MaterialUploader: React.FC<MaterialUploaderProps> = ({
     }
   }, [roomId, loadMaterials]);
 
+  React.useEffect(() => {
+    onMaterialsAnalyzed?.(materials);
+  }, [materials, onMaterialsAnalyzed]);
+
   const handleUpload = useCallback(
     async (file: File) => {
       if (materials.length >= maxFiles) {
@@ -89,6 +92,7 @@ const MaterialUploader: React.FC<MaterialUploaderProps> = ({
         'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'text/plain',
+        'text/markdown',
         'image/jpeg',
         'image/png',
         'image/gif',
@@ -260,7 +264,7 @@ const MaterialUploader: React.FC<MaterialUploaderProps> = ({
           </p>
           <p className="ant-upload-text">点击或拖拽文件到此区域上传</p>
           <p className="ant-upload-hint">
-            支持 PDF、Word、TXT 文档以及 JPG、PNG、GIF 图片
+            支持 PDF、Word、TXT、Markdown 文档以及 JPG、PNG、GIF 图片
           </p>
           <p className="ant-upload-hint" style={{ fontSize: 12, color: '#999' }}>
             文档最大 50MB，图片最大 20MB

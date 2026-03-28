@@ -14,10 +14,13 @@ import {
   Row,
   Space,
   Switch,
+  Select,
   Tag,
   Typography,
   message,
   Modal,
+  Progress,
+  Tooltip,
 } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -28,6 +31,7 @@ import AppHeader from '../components/AppHeader';
 import RoundtableCanvas from '../components/RoundtableCanvas';
 import MaterialUploader from '../components/MaterialUploader';
 import MaterialIntentSynthesis from '../components/MaterialIntentSynthesis';
+import type { MaterialInfo } from '../api/material';
 import ConsensusSummary from '../components/ConsensusSummary';
 import {
   createWorkspace,
@@ -37,6 +41,13 @@ import {
   deleteWorkspace,
   type WorkspaceData,
 } from '../api/workspace';
+import {
+  getRoomRuntimeSnapshot,
+  getRuntimeTask,
+  startConsensusBoard,
+  startProgressEvaluation,
+  trackRuntimeEvent,
+} from '../api/runtime';
 import { useAuth } from '../contexts/AuthContext';
 
 const { Sider, Content, Footer } = Layout;
@@ -57,6 +68,30 @@ type RoundtableRoom = {
 };
 
 type RoundtableStage = 'brief' | 'final';
+
+type JudgeState = {
+  score: number;
+  reason: string;
+  reached: boolean;
+  consensusCount: number;
+  resolvedPainPoints: number;
+  nextFocus: string;
+  updatedAt?: string;
+};
+
+type BoardDispute = {
+  topic: string;
+  pro: string;
+  con: string;
+};
+
+type ConsensusBoardState = {
+  summary: string;
+  consensus: string[];
+  disputes: BoardDispute[];
+  nextQuestions: string[];
+  updatedAt?: string;
+};
 
 type ProbeOption = {
   id: string;
@@ -84,7 +119,7 @@ type RoleMember = {
   soulConfig?: string;  // 灵魂配置长文本
 };
 
-const Home = () => {
+function Home() {
   const { isAuthenticated } = useAuth();
 
   // 添加自定义样式用于列表项hover效果和菜单
@@ -175,7 +210,8 @@ const Home = () => {
   const [intentReady, setIntentReady] = useState(savedState?.intentReady || false);
   const [roles, setRoles] = useState<RoleMember[]>(savedState?.roles || []);
   const [rolesReady, setRolesReady] = useState(savedState?.rolesReady || false);
-  const [roleTemplates, setRoleTemplates] = useState<{id: number; name: string; stance: string; description?: string; soul_config?: string; is_active?: boolean}[]>([]);
+  const [roleTemplates, setRoleTemplates] = useState<{id: number; name: string; stance: string; description?: string; soul_config?: string; is_active?: boolean; is_default?: boolean}[]>([]);
+  const [scenarioTemplates, setScenarioTemplates] = useState<{id: number; name: string; description?: string; preset_roles: number[]; system_prompt_override?: string; is_active: boolean}[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<Record<string, string>>({});
   const [roomReady, setRoomReady] = useState(savedState?.roomReady || false);
   const [roomId, setRoomId] = useState(savedState?.roomId || '');
@@ -203,21 +239,45 @@ const Home = () => {
   const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>(savedState?.roundtableStage || 'brief');
   const [pendingAutoSend, setPendingAutoSend] = useState<{ roomId: string; text: string; stage: RoundtableStage } | null>(null);
   const [expectedResult, setExpectedResult] = useState(savedState?.expectedResult || '');
-  const [uploadedMaterials, setUploadedMaterials] = useState<import('../api/material').MaterialInfo[]>([]);
+  const [uploadedMaterials, setUploadedMaterials] = useState<MaterialInfo[]>([]);
   const [preUploadRoomId] = useState<string>(`pre_${Date.now().toString(36)}`);
   const [generatingExpectedResult, setGeneratingExpectedResult] = useState(false);
   const [maxDialogueRounds, setMaxDialogueRounds] = useState<number>(savedState?.maxDialogueRounds || 6);
   const [autoRoundCount, setAutoRoundCount] = useState<number>(savedState?.autoRoundCount || 0);
   const [autoConversationEnabled, setAutoConversationEnabled] = useState(true);
+  const [judgeScore, setJudgeScore] = useState<number>(savedState?.judgeState?.score || 0);
+  const [judgeReason, setJudgeReason] = useState<string>(savedState?.judgeState?.reason || '');
+  const [judgeState, setJudgeState] = useState<JudgeState>({
+    score: savedState?.judgeState?.score || 0,
+    reason: savedState?.judgeState?.reason || '',
+    reached: savedState?.judgeState?.reached || false,
+    consensusCount: savedState?.judgeState?.consensusCount || 0,
+    resolvedPainPoints: savedState?.judgeState?.resolvedPainPoints || 0,
+    nextFocus: savedState?.judgeState?.nextFocus || '',
+    updatedAt: savedState?.judgeState?.updatedAt,
+  });
+  const [consensusBoard, setConsensusBoard] = useState<ConsensusBoardState>({
+    summary: savedState?.consensusBoard?.summary || '',
+    consensus: savedState?.consensusBoard?.consensus || [],
+    disputes: savedState?.consensusBoard?.disputes || [],
+    nextQuestions: savedState?.consensusBoard?.nextQuestions || [],
+    updatedAt: savedState?.consensusBoard?.updatedAt,
+  });
+  const [canvasSnapshot, setCanvasSnapshot] = useState<Record<string, unknown> | null>(savedState?.canvasSnapshot || null);
+  const [runtimePendingTasks, setRuntimePendingTasks] = useState(0);
   const [customProbeOptions, setCustomProbeOptions] = useState<Record<string, string>>({});
   const [editingSoulConfigRole, setEditingSoulConfigRole] = useState<RoleMember | null>(null);
   const [editingSoulConfigText, setEditingSoulConfigText] = useState('');
   const [newRoleName, setNewRoleName] = useState('');
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
+  const [isExpertMode, setIsExpertMode] = useState(false);
+  const [newIdeaModalOpen, setNewIdeaModalOpen] = useState(false);
+  const [newIdeaDraft, setNewIdeaDraft] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const suppressBackendSaveRef = useRef(false);
   const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasLoadedInitialDataRef = useRef(false);
+  const backendWorkspaceIdsRef = useRef<Set<string>>(new Set());  // 避免闭包问题
   const [form] = Form.useForm();
 
   // 生成基于意图洞察的摘要标题
@@ -388,44 +448,121 @@ const Home = () => {
     return text || fallback;
   };
 
-  const evaluateExpectedResultReached = useCallback(async (conversationText: string, currentRound: number) => {
-    if (!selectedModelId || !expectedResult.trim()) {
-      return { reached: false, reason: '', nextPrompt: '' };
+  const applyJudgeResult = useCallback((payload?: Record<string, unknown> | null) => {
+    if (!payload) {
+      return;
     }
-    const prompt = `你是圆桌对话收敛检查器，请判断当前讨论是否已经达到期望结果。
-请严格输出 JSON，不要额外说明：
-{"reached":true/false,"reason":"不超过60字","next_prompt":"若未达到，给出下一轮用户引导语；若已达到可留空"}
-
-期望结果：${expectedResult}
-当前轮次：${currentRound}/${maxDialogueRounds}
-核心目标：${intentCard.coreGoal || '无'}
-限制条件：${intentCard.constraints || '无'}
-待解决痛点：${intentCard.painPoints || '无'}
-最近对话：
-${conversationText || '无'}
-`;
-    const raw = await collectModelText(
-      prompt,
-      '你擅长判断目标达成度，要求判断保守、明确，避免误判。',
-    );
-    const json = parseJsonObject(raw);
-    if (!json) {
-      return { reached: false, reason: '', nextPrompt: '' };
-    }
-    return {
-      reached: Boolean(json.reached),
-      reason: typeof json.reason === 'string' ? json.reason.trim() : '',
-      nextPrompt: typeof json.next_prompt === 'string' ? json.next_prompt.trim() : '',
+    const nextState: JudgeState = {
+      score: Number(payload.score) || 0,
+      reason: typeof payload.reason === 'string' ? payload.reason : '',
+      reached: Boolean(payload.reached),
+      consensusCount: Number(payload.consensusCount) || 0,
+      resolvedPainPoints: Number(payload.resolvedPainPoints) || 0,
+      nextFocus: typeof payload.nextFocus === 'string' ? payload.nextFocus : '',
+      updatedAt: new Date().toISOString(),
     };
-  }, [
-    selectedModelId,
-    expectedResult,
-    maxDialogueRounds,
-    intentCard.coreGoal,
-    intentCard.constraints,
-    intentCard.painPoints,
-    collectModelText,
-  ]);
+    setJudgeState(nextState);
+    setJudgeScore(nextState.score);
+    setJudgeReason(nextState.reason);
+  }, []);
+
+  const applyBoardResult = useCallback((payload?: Record<string, unknown> | null) => {
+    if (!payload) {
+      return;
+    }
+    setConsensusBoard({
+      summary: typeof payload.summary === 'string' ? payload.summary : '',
+      consensus: Array.isArray(payload.consensus) ? payload.consensus as string[] : [],
+      disputes: Array.isArray(payload.disputes) ? payload.disputes as BoardDispute[] : [],
+      nextQuestions: Array.isArray(payload.nextQuestions) ? payload.nextQuestions as string[] : [],
+      updatedAt: new Date().toISOString(),
+    });
+  }, []);
+
+  const refreshRuntimeSnapshot = useCallback(async (targetRoomId?: string) => {
+    if (!targetRoomId) {
+      return;
+    }
+    try {
+      const snapshot = await getRoomRuntimeSnapshot(targetRoomId);
+      setRuntimePendingTasks(snapshot.pending_tasks || 0);
+      applyJudgeResult(snapshot.latest_progress || null);
+      applyBoardResult(snapshot.latest_board || null);
+    } catch (error) {
+      console.error('加载运行时快照失败:', error);
+    }
+  }, [applyBoardResult, applyJudgeResult]);
+
+  const pollRuntimeTask = useCallback(async (taskId: string, taskType: 'progress' | 'board') => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        const task = await getRuntimeTask(taskId);
+        if (task.status === 'completed') {
+          if (taskType === 'progress') {
+            applyJudgeResult(task.result_payload || null);
+          } else {
+            applyBoardResult(task.result_payload || null);
+          }
+          await refreshRuntimeSnapshot(task.room_id);
+          return;
+        }
+        if (task.status === 'failed') {
+          message.warning(task.error_message || '后台任务执行失败');
+          await refreshRuntimeSnapshot(task.room_id);
+          return;
+        }
+      } catch (error) {
+        console.error('轮询运行时任务失败:', error);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+  }, [applyBoardResult, applyJudgeResult, refreshRuntimeSnapshot]);
+
+  const evaluateExpectedResultReached = useCallback(async (conversationText: string, currentRound: number) => {
+    if (!selectedModelId || !expectedResult.trim() || !roomId) {
+      return { reached: false, reason: '', nextPrompt: '', score: 0 };
+    }
+
+    try {
+      await refreshRuntimeSnapshot(roomId);
+
+      const progressTask = await startProgressEvaluation({
+        room_id: roomId,
+        model_id: selectedModelId,
+        transcript: conversationText,
+        expected_result: expectedResult,
+        current_round: currentRound,
+        intent_card: intentCard,
+        trigger: 'auto_round',
+      });
+      void pollRuntimeTask(progressTask.task_id, 'progress');
+
+      const boardTask = await startConsensusBoard({
+        room_id: roomId,
+        model_id: selectedModelId,
+        transcript: conversationText,
+        expected_result: expectedResult,
+        current_round: currentRound,
+        intent_card: intentCard,
+        trigger: 'auto_round',
+      });
+      void pollRuntimeTask(boardTask.task_id, 'board');
+
+      const fallbackReason = judgeState.reason || '等待裁判评估结果同步';
+      return {
+        reached: judgeState.reached || false,
+        reason: fallbackReason,
+        nextPrompt: judgeState.reached
+          ? ''
+          : `（裁判提示：当前目标达成度 ${judgeState.score || 0}%，原因：${fallbackReason}${judgeState.nextFocus ? `；下一步：${judgeState.nextFocus}` : ''}）`,
+        score: judgeState.score || 0,
+      };
+    } catch (err) {
+      console.error('裁判评估失败:', err);
+      return { reached: judgeState.reached || false, reason: '评估失败', nextPrompt: '', score: judgeState.score || 0 };
+    }
+  }, [expectedResult, intentCard, judgeState, pollRuntimeTask, refreshRuntimeSnapshot, roomId, selectedModelId]);
 
   const loadWorkspaces = async () => {
     if (!isAuthenticated) {
@@ -447,6 +584,7 @@ ${conversationText || '无'}
         // 加载最新的工作台数据
         const latestWorkspace = workspaces[0];
         loadWorkspaceData(latestWorkspace.data);
+        void refreshRuntimeSnapshot(latestWorkspace.data.room_id);
       } else {
         setBackendWorkspaceIds(new Set());
       }
@@ -489,10 +627,29 @@ ${conversationText || '无'}
     setExpectedResult(data.expected_result || '');
     setMaxDialogueRounds(data.max_dialogue_rounds || 6);
     setAutoRoundCount(data.auto_round_count || 0);
+    setJudgeState({
+      score: data.judge_state?.score || 0,
+      reason: data.judge_state?.reason || '',
+      reached: data.judge_state?.reached || false,
+      consensusCount: data.judge_state?.consensusCount || 0,
+      resolvedPainPoints: data.judge_state?.resolvedPainPoints || 0,
+      nextFocus: data.judge_state?.nextFocus || '',
+      updatedAt: data.judge_state?.updated_at,
+    });
+    setJudgeScore(data.judge_state?.score || 0);
+    setJudgeReason(data.judge_state?.reason || '');
+    setConsensusBoard({
+      summary: data.consensus_board?.summary || '',
+      consensus: data.consensus_board?.consensus || [],
+      disputes: data.consensus_board?.disputes || [],
+      nextQuestions: data.consensus_board?.nextQuestions || [],
+      updatedAt: data.consensus_board?.updated_at,
+    });
+    setCanvasSnapshot((data.canvas_snapshot as Record<string, unknown>) || null);
     setAutoConversationEnabled(true);
   };
 
-  const saveWorkspaceToBackend = async () => {
+  const saveWorkspaceToBackend = useCallback(async () => {
     if (!isAuthenticated || !roomId) {
       return;
     }
@@ -533,9 +690,26 @@ ${conversationText || '无'}
         expected_result: expectedResult,
         max_dialogue_rounds: maxDialogueRounds,
         auto_round_count: autoRoundCount,
+        judge_state: {
+          score: judgeState.score,
+          reason: judgeState.reason,
+          reached: judgeState.reached,
+          consensusCount: judgeState.consensusCount,
+          resolvedPainPoints: judgeState.resolvedPainPoints,
+          nextFocus: judgeState.nextFocus,
+          updated_at: judgeState.updatedAt,
+        },
+        consensus_board: {
+          summary: consensusBoard.summary,
+          consensus: consensusBoard.consensus,
+          disputes: consensusBoard.disputes,
+          nextQuestions: consensusBoard.nextQuestions,
+          updated_at: consensusBoard.updatedAt,
+        },
+        canvas_snapshot: canvasSnapshot,
       };
 
-      if (backendWorkspaceIds.has(roomId)) {
+      if (backendWorkspaceIdsRef.current.has(roomId)) {
         try {
           await updateWorkspace(roomId, workspaceData);
         } catch {
@@ -552,7 +726,7 @@ ${conversationText || '无'}
     } catch (error) {
       console.error('保存工作台到后端失败:', error);
     }
-  };
+  }, [autoRoundCount, canvasConsensus, canvasDisputes, canvasSnapshot, canvasUpdatedAt, consensusBoard, expectedResult, initialDemand, intentCard, isAuthenticated, judgeState, maxDialogueRounds, messages, roles, rolesReady, roomId, roomReady, roundtableRooms, roundtableStage, selectedModelId, step, systemPrompt, intentReady]);
 
   const loadModels = async () => {
     setLoadingModels(true);
@@ -579,6 +753,18 @@ ${conversationText || '无'}
       }
     } catch (e) {
       console.error('加载角色模板失败:', e);
+    }
+  };
+
+  const loadScenarioTemplates = async () => {
+    try {
+      const response = await fetch('/api/v1/scenario-templates/');
+      if (response.ok) {
+        const data = await response.json();
+        setScenarioTemplates(data);
+      }
+    } catch (e) {
+      console.error('加载场景模板失败:', e);
     }
   };
 
@@ -615,33 +801,55 @@ ${conversationText || '无'}
 
     loadModels();
     loadRoleTemplates();
+    loadScenarioTemplates();
     loadPromptTemplates();
     loadWorkspaces(); // 加载工作台列表
   }, []);
 
   // 保存工作台状态到 localStorage（作为 fallback）和后端
   useEffect(() => {
-    const stateToSave = {
-      step,
-      initialDemand,
-      intentCard,
-      intentReady,
-      roles,
-      rolesReady,
-      roomReady,
-      roomId,
-      systemPrompt,
-      messages,
-      canvasConsensus,
-      canvasDisputes,
-      canvasUpdatedAt,
-      roundtableRooms,
-      roundtableStage,
-      selectedModelId,
-      expectedResult,
-      maxDialogueRounds,
-      autoRoundCount,
-    };
+    const stateToSave = isAuthenticated
+      ? {
+          step,
+          initialDemand,
+          intentCard,
+          intentReady,
+          rolesReady,
+          roomReady,
+          roomId,
+          roundtableRooms,
+          roundtableStage,
+          selectedModelId,
+          expectedResult,
+          maxDialogueRounds,
+          autoRoundCount,
+          judgeState,
+          consensusBoard,
+        }
+      : {
+          step,
+          initialDemand,
+          intentCard,
+          intentReady,
+          roles,
+          rolesReady,
+          roomReady,
+          roomId,
+          systemPrompt,
+          messages,
+          canvasConsensus,
+          canvasDisputes,
+          canvasUpdatedAt,
+          roundtableRooms,
+          roundtableStage,
+          selectedModelId,
+          expectedResult,
+          maxDialogueRounds,
+          autoRoundCount,
+          judgeState,
+          consensusBoard,
+          canvasSnapshot,
+        };
 
     // 保存到 localStorage（作为 fallback）
     try {
@@ -686,12 +894,44 @@ ${conversationText || '无'}
     maxDialogueRounds,
     autoRoundCount,
     isAuthenticated,
-    backendWorkspaceIds,
+    judgeState,
+    consensusBoard,
+    canvasSnapshot,
+    saveWorkspaceToBackend,
+    // 注意: 移除 backendWorkspaceIds 因为它是引用类型，引用变化会触发不必要的 effect
+    // backendWorkspaceIds 只在 saveWorkspaceToBackend 函数内部使用
   ]);
+
+  // 同步 backendWorkspaceIds 到 ref，避免闭包问题
+  useEffect(() => {
+    backendWorkspaceIdsRef.current = backendWorkspaceIds;
+  }, [backendWorkspaceIds]);
 
   useEffect(() => {
     form.setFieldsValue(intentCard);
   }, [form, intentCard]);
+
+  useEffect(() => {
+    if (!roomId) {
+      setRuntimePendingTasks(0);
+      return;
+    }
+    void refreshRuntimeSnapshot(roomId);
+  }, [refreshRuntimeSnapshot, roomId]);
+
+  const handleMaterialsAnalyzed = (materials: MaterialInfo[]) => {
+    setUploadedMaterials(materials);
+    if (materials.length > 0) {
+      void trackRuntimeEvent({
+        room_id: roomId || preUploadRoomId,
+        event_type: 'material.analyzed',
+        event_payload: {
+          count: materials.length,
+          filenames: materials.map((item) => item.filename),
+        },
+      }).catch((error) => console.error('记录材料事件失败:', error));
+    }
+  };
 
   const generateProbeQuestions = (text: string): ProbeQuestion[] => {
     const base = text.trim();
@@ -730,11 +970,17 @@ ${conversationText || '无'}
     ];
   };
 
-  const startIntentProbing = () => {
-    if (!initialDemand.trim()) {
-      message.warning('请先输入你的需求');
+  const startIntentProbing = async () => {
+    if (!initialDemand.trim() && uploadedMaterials.length === 0) {
+      message.warning('请先输入你的需求或上传相关材料');
       return;
     }
+    
+    if (!selectedModelId) {
+      message.warning('请先在全局配置中选择一个可用的大模型');
+      return;
+    }
+    
     setIntentReady(false);
     setRolesReady(false);
     setRoomReady(false);
@@ -745,6 +991,73 @@ ${conversationText || '无'}
     setCanvasUpdatedAt('');
     setAutoRoundCount(0);
     setAutoConversationEnabled(true);
+    
+    // 如果没有开启高级模式，则通过 AI 主持人静默抽取意图，不再显示繁琐的问卷
+    if (!isExpertMode) {
+      const loadingMsg = message.loading('AI主持人正在分析您的需求并组建圆桌...', 0);
+      try {
+        const materialContent = uploadedMaterials.length > 0 
+          ? `附件材料摘要：${uploadedMaterials.map(m => m.summary || m.filename).join(';')}` 
+          : '';
+        const fullDemand = `${initialDemand}\n${materialContent}`;
+
+        const prompt = `你是一位经验丰富的"需求分析师"。请根据用户的初始输入，提炼出圆桌讨论所需的结构化意图卡片。
+请严格输出 JSON 格式，不要包含任何其他文字：
+{
+  "coreGoal": "核心目标（不超过30个字）",
+  "constraints": "限制条件（如果有，简明扼要；如果没有填无）",
+  "painPoints": "核心痛点（如果有，简明扼要；如果没有填无）"
+}
+
+用户输入：${fullDemand}`;
+
+        const rawJson = await collectModelText(prompt, '你是一个专业的 JSON 数据提取机器人，只输出合法的 JSON');
+        const intentData = parseJsonObject(rawJson);
+        
+        if (intentData) {
+          const newIntent = {
+            coreGoal: intentData.coreGoal || initialDemand.slice(0, 20),
+            constraints: intentData.constraints || '无',
+            painPoints: intentData.painPoints || '无'
+          };
+          setIntentCard(newIntent);
+          
+          // 如果用户没有选择具体场景模板，系统默认选出一个包含建设/对抗/评审的通用组合
+          // 这里简化处理：直接自动跳到角色确认步骤，并根据模板自动生成
+          setIntentReady(true);
+          setStep('roles');
+          
+          // 自动匹配基础角色
+          const generatedRoles: RoleMember[] = roleTemplates
+            .filter((tpl) => tpl.is_default || tpl.name.includes('黑帽') || tpl.name.includes('审计'))
+            .map((tpl) => ({
+              id: `role_${tpl.id}`,
+              name: tpl.name,
+              stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+              desc: tpl.description || '',
+              selected: true,
+              soulConfig: tpl.soul_config,
+            }));
+          setRoles(generatedRoles);
+          
+          // 可以在这里自动生成预期结果
+          const generatedResult = await generateExpectedResultByIntent(newIntent);
+          setExpectedResult(generatedResult);
+
+          loadingMsg();
+          message.success('需求分析完毕，已为您匹配专业角色阵型');
+        } else {
+          throw new Error('JSON 解析失败');
+        }
+      } catch (err) {
+        loadingMsg();
+        console.error(err);
+        message.error('AI分析意图失败，请开启高级模式手动配置或重试');
+      }
+      return;
+    }
+
+    // 高级模式下的老逻辑：展示固定的探针问题
     const questions = generateProbeQuestions(initialDemand);
     setProbeQuestions(questions);
     setProbeTurns([
@@ -814,6 +1127,114 @@ ${conversationText || '无'}
     setRoles((prev) => prev.map((role) => (role.id === roleId ? { ...role, selected: !role.selected } : role)));
   };
 
+  const selectScenarioTemplate = async (templateId: number) => {
+    const template = scenarioTemplates.find(t => t.id === templateId);
+    if (!template) return;
+    
+    // 如果没有输入需求，提示
+    if (!initialDemand.trim() && uploadedMaterials.length === 0) {
+      message.warning('请先输入一句话需求或上传需求文档');
+      return;
+    }
+
+    setIsCreatingWorkspace(true);
+    try {
+      // 1. 设置意图卡片（简单版本，后续可以接入大模型）
+      const mockIntent = {
+        coreGoal: initialDemand.trim() || `围绕上传的材料进行${template.name}讨论`,
+        constraints: '无',
+        painPoints: '无',
+      };
+      setIntentCard(mockIntent);
+      setIntentReady(true);
+
+      // 2. 配置角色
+      const generatedRoles: RoleMember[] = roleTemplates
+        .filter(r => template.preset_roles.includes(r.id))
+        .map(r => ({
+          id: `role_${r.id}`,
+          name: r.name,
+          stance: (r.stance as '建设' | '对抗' | '中立' | '评审'),
+          desc: r.description || '',
+          selected: true,
+          soulConfig: r.soul_config,
+        }));
+      setRoles(generatedRoles);
+      setRolesReady(true);
+      setJudgeState({ score: 0, reason: '', reached: false, consensusCount: 0, resolvedPainPoints: 0, nextFocus: '' });
+      setJudgeScore(0);
+      setJudgeReason('');
+      setConsensusBoard({ summary: '', consensus: [], disputes: [], nextQuestions: [] });
+      setCanvasSnapshot(null);
+
+      // 3. 准备房间
+      setRoomReady(true);
+      const newRoomId = `room_${Date.now().toString(36)}`;
+      setRoomId(newRoomId);
+      setStep('roundtable_view');
+      
+      // 4. 生成期望结果并启动
+      let currentExpectedResult = expectedResult;
+      if (!currentExpectedResult) {
+         currentExpectedResult = `产出符合【${template.name}】视角的结论和可执行方案`;
+         setExpectedResult(currentExpectedResult);
+      }
+
+      // 如果模板有特定的 system_prompt，可以覆盖
+      if (template.system_prompt_override) {
+        setSystemPrompt(template.system_prompt_override);
+      }
+
+      const seedLines = [
+        '【系统提示：圆桌会议已启动】',
+        `本次会议主题：${template.name}`,
+        `讨论目标：${mockIntent.coreGoal}`,
+        currentExpectedResult ? `期望结果：${currentExpectedResult}` : '',
+        '请各角色先给出最关键的 3-5 条核心要点。',
+      ].filter(Boolean);
+      
+      setPendingAutoSend({ roomId: newRoomId, text: seedLines.join('\n'), stage: 'brief' });
+      message.success(`已应用模板：${template.name}，并自动进入圆桌`);
+      void trackRuntimeEvent({
+        room_id: newRoomId,
+        event_type: 'template.selected',
+        event_payload: { template_id: template.id, template_name: template.name },
+      }).catch((error) => console.error('记录模板事件失败:', error));
+
+      // 创建左侧菜单项
+      const defaultTitle = `圆桌空间_${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+      const newRoom: RoundtableRoom = {
+        id: newRoomId,
+        name: defaultTitle,
+        createdAt: new Date().toISOString(),
+      };
+      setRoundtableRooms((prev) => [newRoom, ...prev]);
+
+      // 异步更新标题
+      const generateAndUpdateTitle = async () => {
+        try {
+          const generatedTitle = await generateIntentSummaryTitle({
+            initialDemand,
+            intentCard: mockIntent,
+            probeTurns: [],
+          }, new Date());
+
+          setRoundtableRooms((prev) =>
+            prev.map((room) =>
+              room.id === newRoomId ? { ...room, name: generatedTitle } : room
+            )
+          );
+        } catch (e) {
+          console.error(e);
+        }
+      };
+      generateAndUpdateTitle();
+
+    } finally {
+      setIsCreatingWorkspace(false);
+    }
+  };
+
   const addCustomRole = () => {
     if (!newRoleName.trim()) {
       message.warning('请输入角色名称');
@@ -849,16 +1270,8 @@ ${conversationText || '无'}
     }
 
     const selected = roles.filter((r) => r.selected);
-    // 检查是否包含黑帽风控官（stance为"对抗"或名称包含"黑帽"）
-    const hasBlackhat = selected.some((r) => r.stance === '对抗' || r.name.includes('黑帽'));
-    // 检查是否包含审计官（stance为"评审"或名称包含"审计"）
-    const hasAudit = selected.some((r) => r.stance === '评审' || r.name.includes('审计'));
-    if (selected.length < 4 || !hasBlackhat) {
-      message.warning('至少选择 3 位角色 + 1 位对抗性角色（黑帽）');
-      return;
-    }
-    if (!hasAudit) {
-      message.warning('必须包含审计官角色');
+    if (selected.length < 2) {
+      message.warning('至少选择 2 位角色，才能形成有效讨论');
       return;
     }
 
@@ -872,6 +1285,11 @@ ${conversationText || '无'}
       setAutoRoundCount(0);
       setAutoConversationEnabled(true);
       setPendingAutoSend(null);
+      setJudgeState({ score: 0, reason: '', reached: false, consensusCount: 0, resolvedPainPoints: 0, nextFocus: '' });
+      setJudgeScore(0);
+      setJudgeReason('');
+      setConsensusBoard({ summary: '', consensus: [], disputes: [], nextQuestions: [] });
+      setCanvasSnapshot(null);
       setRolesReady(true);
       setRoomReady(true);
       const newRoomId = `room_${Date.now().toString(36)}`;
@@ -1016,6 +1434,12 @@ ${conversationText || '无'}
     setMaxDialogueRounds(6);
     setAutoRoundCount(0);
     setAutoConversationEnabled(true);
+    setJudgeState({ score: 0, reason: '', reached: false, consensusCount: 0, resolvedPainPoints: 0, nextFocus: '' });
+    setJudgeScore(0);
+    setJudgeReason('');
+    setConsensusBoard({ summary: '', consensus: [], disputes: [], nextQuestions: [] });
+    setCanvasSnapshot(null);
+    setRuntimePendingTasks(0);
   };
 
   const selectRoundtableRoom = async (room: RoundtableRoom) => {
@@ -1035,6 +1459,7 @@ ${conversationText || '无'}
         console.error('加载工作台数据失败:', error);
       }
     }
+    void refreshRuntimeSnapshot(room.id);
     setTimeout(() => {
       suppressBackendSaveRef.current = false;
     }, 200);
@@ -1071,12 +1496,8 @@ ${conversationText || '无'}
         // 加载剩余的第一个工作台
         const nextRoom = remaining[0];
         selectRoundtableRoom(nextRoom);
-        if (isAuthenticated && backendWorkspaceIds.has(nextRoom.id)) {
-          const workspaceData = await getWorkspace(nextRoom.id);
-          if (workspaceData) {
-            loadWorkspaceData(workspaceData.data);
-          }
-        }
+        // 注意: selectRoundtableRoom 内部已经调用了 getWorkspace 和 loadWorkspaceData
+        // 不要重复调用，否则会导致 API 被调用两次
       } else {
         createNewRoundtable();
       }
@@ -1425,7 +1846,7 @@ ${userText}
     void sendToRoundtable(pendingAutoSend.text, pendingAutoSend.stage);
   }, [pendingAutoSend, roomId, roomReady, sending, sendToRoundtable]);
 
-  const generateFinalPlan = () => {
+  const generateFinalPlan = useCallback(() => {
     if (!roomReady) {
       message.warning('请先创建圆桌空间');
       return;
@@ -1434,12 +1855,72 @@ ${userText}
       message.warning('正在生成中，请稍候或点击停止');
       return;
     }
+    void trackRuntimeEvent({
+      room_id: roomId,
+      event_type: 'director.summarize',
+      event_payload: { stage: roundtableStage, message_count: messages.length },
+    }).catch((error) => console.error('记录导演事件失败:', error));
     setPendingAutoSend(null);
     setAutoConversationEnabled(false);
     setRoundtableStage('final');
     const convergeMsg = promptTemplates.prompt_converge_trigger || '我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。';
     void sendToRoundtable(convergeMsg, 'final');
-  };
+  }, [messages.length, promptTemplates.prompt_converge_trigger, roomId, roomReady, roundtableStage, sendToRoundtable, sending]);
+
+  const applyDirectorAction = useCallback((action: string, injectedIdea?: string) => {
+    if (!roomReady) {
+      return;
+    }
+    if (sending) {
+      message.warning('正在生成中，请稍候再干预');
+      return;
+    }
+
+    let overrideText = '';
+    let hiddenPrompt = '';
+    let eventPayload: Record<string, unknown> = { stage: roundtableStage };
+
+    switch (action) {
+      case 'focus':
+        overrideText = '（导演指令）各位专家跑题了，请立刻回到我们的核心目标和痛点上！';
+        hiddenPrompt = `【系统最高指令】用户认为当前讨论已经偏离主题。请你接下来的发言必须强行拉回到核心目标「${intentCard.coreGoal}」，并针对痛点「${intentCard.painPoints}」给出看法，停止发散。`;
+        break;
+      case 'conflict':
+        overrideText = '（导演指令）现在的讨论太温和了，我需要看到更尖锐的批评和对抗！';
+        hiddenPrompt = '【系统最高指令】用户希望看到更激烈的对抗。请你在接下来的发言中，必须找到上一位发言者的漏洞，进行尖锐反驳，并提出极具挑战性的问题。';
+        break;
+      case 'new_idea': {
+        const idea = (injectedIdea || '').trim();
+        if (!idea) {
+          setNewIdeaModalOpen(true);
+          return;
+        }
+        overrideText = `（导演指令）我有一个新点子：${idea}。请大家评估。`;
+        hiddenPrompt = `【系统最高指令】用户提出了一个新点子：「${idea}」。无论当前处于什么阶段，请立即评估这个点子的最大优势和致命风险。`;
+        eventPayload = { ...eventPayload, idea };
+        break;
+      }
+      case 'summarize':
+        generateFinalPlan();
+        return;
+      default:
+        return;
+    }
+
+    void trackRuntimeEvent({
+      room_id: roomId,
+      event_type: `director.${action}`,
+      event_payload: eventPayload,
+    }).catch((error) => console.error('记录导演事件失败:', error));
+
+    if (overrideText) {
+      const originalSystemPrompt = systemPrompt;
+      setSystemPrompt(hiddenPrompt);
+      void sendToRoundtable(overrideText, roundtableStage).finally(() => {
+        setSystemPrompt(originalSystemPrompt);
+      });
+    }
+  }, [generateFinalPlan, intentCard.coreGoal, intentCard.painPoints, roomId, roomReady, roundtableStage, sendToRoundtable, sending, systemPrompt]);
 
   const canGoRoles = intentReady;
 
@@ -1627,13 +2108,33 @@ ${userText}
                           rows={3}
                           value={initialDemand}
                           onChange={(e) => setInitialDemand(e.target.value)}
-                          placeholder="请简要描述你的需求（回车后不会立即建群，而是先澄清意图）"
+                          placeholder="请简要描述你的需求（一句话，或直接上传文档）"
                         />
                         <MaterialUploader
                           roomId={roomId || preUploadRoomId}
-                          onMaterialsAnalyzed={setUploadedMaterials}
+                          onMaterialsAnalyzed={handleMaterialsAnalyzed}
                           maxFiles={10}
                         />
+
+                        {/* 场景模板快捷入口 */}
+                        {scenarioTemplates.length > 0 && (
+                          <div style={{ marginTop: 16 }}>
+                            <Text strong style={{ display: 'block', marginBottom: 8 }}>一键上桌（场景模板）</Text>
+                            <Space wrap>
+                              {scenarioTemplates.filter(t => t.is_active).map(template => (
+                                <Button 
+                                  key={template.id} 
+                                  onClick={() => selectScenarioTemplate(template.id)}
+                                  disabled={!initialDemand.trim() && uploadedMaterials.length === 0}
+                                  title={(!initialDemand.trim() && uploadedMaterials.length === 0) ? "请先输入需求或上传资料" : template.description}
+                                >
+                                  {template.name}
+                                </Button>
+                              ))}
+                            </Space>
+                          </div>
+                        )}
+
                         {uploadedMaterials.length > 0 && (
                           <MaterialIntentSynthesis
                             roomId={roomId || preUploadRoomId}
@@ -1650,6 +2151,7 @@ ${userText}
                             }}
                           />
                         )}
+                        <Space style={{ width: '100%', justifyContent: 'space-between', marginTop: 16 }}>
                         <Space>
                         <Button 
                           onClick={() => {
@@ -1664,96 +2166,133 @@ ${userText}
                         >
                           加载示例输入
                         </Button>
-                        <Button type="primary" onClick={startIntentProbing}>
-                          开始洞察
-                        </Button>
-                        <Button
-                          onClick={() => {
-                            setProbeQuestions([]);
-                            setProbeTurns([]);
-                            setIntentCard({ coreGoal: '', constraints: '', painPoints: '' });
-                            setExpectedResult('');
-                            setAutoRoundCount(0);
-                            setIntentReady(false);
-                            setRolesReady(false);
-                            setRoomReady(false);
-                            setRoles([]);
-                            setMessages([]);
-                            setCanvasConsensus([]);
-                            setCanvasDisputes([]);
-                            setCanvasUpdatedAt('');
-                            form.resetFields();
-                          }}
-                        >
-                          重置
-                        </Button>
-                      </Space>
-                      <Divider style={{ margin: '8px 0' }} />
-                      {probeTurns.length === 0 && <Empty description="输入需求后点击「开始洞察」，系统将提出澄清问题并生成需求卡片" />}
-                      {probeTurns.length > 0 && (
-                        <List
-                          dataSource={probeTurns}
-                          renderItem={(item) => (
-                            <List.Item style={{ border: 'none', padding: '6px 0' }}>
-                              <Space align="start">
-                                <Avatar style={{ background: item.role === 'user' ? '#1677ff' : '#52c41a' }}>
-                                  {item.role === 'user' ? '我' : '问'}
-                                </Avatar>
-                                <Card size="small" style={{ width: '100%' }}>
-                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
-                                </Card>
-                              </Space>
-                            </List.Item>
-                          )}
-                        />
-                      )}
-                      {probeQuestions.length > 0 && (
-                        <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                          {probeQuestions.map((q) => (
-                            <Card key={q.id} size="small" title={q.question}>
-                              <Space wrap>
-                                {q.options.map((opt) => (
-                                  <Button key={opt.id} onClick={() => applyProbeAnswer(q.id, opt.label)}>
-                                    {opt.label}
-                                  </Button>
-                                ))}
-                                <Input
-                                  key={`input-${q.id}`}
-                                  placeholder="其他（请输入）"
-                                  style={{ width: 200 }}
-                                  value={customProbeOptions[q.id] || ''}
-                                  onChange={(e) => setCustomProbeOptions({ ...customProbeOptions, [q.id]: e.target.value })}
-                                  onPressEnter={() => {
-                                    const customValue = customProbeOptions[q.id]?.trim();
-                                    if (customValue) {
-                                      applyProbeAnswer(q.id, customValue);
-                                      setCustomProbeOptions({ ...customProbeOptions, [q.id]: '' });
-                                    }
-                                  }}
-                                />
-                                <Button
-                                  key={`add-${q.id}`}
-                                  onClick={() => {
-                                    const customValue = customProbeOptions[q.id]?.trim();
-                                    if (customValue) {
-                                      applyProbeAnswer(q.id, customValue);
-                                      setCustomProbeOptions({ ...customProbeOptions, [q.id]: '' });
-                                    }
-                                  }}
-                                >
-                                  添加
-                                </Button>
-                              </Space>
-                            </Card>
-                          ))}
+                        <Space>
+                          <Switch checked={isExpertMode} onChange={setIsExpertMode} />
+                          <Text>高级模式（自定义探针与角色配置）</Text>
                         </Space>
+                        </Space>
+                      </Space>
+                      </Space>
+                      {isExpertMode && (
+                        <>
+                          <Divider style={{ margin: '8px 0' }} />
+                          <Space style={{ marginBottom: 16 }}>
+                            <Button type="primary" onClick={startIntentProbing}>
+                              开始洞察 (高级)
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                setProbeQuestions([]);
+                                setProbeTurns([]);
+                                setIntentCard({ coreGoal: '', constraints: '', painPoints: '' });
+                                setExpectedResult('');
+                                setAutoRoundCount(0);
+                                setIntentReady(false);
+                                setRolesReady(false);
+                                setRoomReady(false);
+                                setRoles([]);
+                                setMessages([]);
+                                setCanvasConsensus([]);
+                                setCanvasDisputes([]);
+                                setCanvasUpdatedAt('');
+                                form.resetFields();
+                              }}
+                            >
+                              重置
+                            </Button>
+                          </Space>
+                          {probeTurns.length === 0 && <Empty description="输入需求后点击「开始洞察」，系统将提出澄清问题并生成需求卡片" />}
+                          {probeTurns.length > 0 && (
+                            <List
+                              dataSource={probeTurns}
+                              renderItem={(item) => (
+                                <List.Item style={{ border: 'none', padding: '6px 0' }}>
+                                  <Space align="start">
+                                    <Avatar style={{ background: item.role === 'user' ? '#1677ff' : '#52c41a' }}>
+                                      {item.role === 'user' ? '我' : '问'}
+                                    </Avatar>
+                                    <Card size="small" style={{ width: '100%' }}>
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
+                                    </Card>
+                                  </Space>
+                                </List.Item>
+                              )}
+                            />
+                          )}
+                          {probeQuestions.length > 0 && (
+                            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                              {probeQuestions.map((q) => (
+                                <Card key={q.id} size="small" title={q.question}>
+                                  <Space wrap>
+                                    {q.options.map((opt) => (
+                                      <Button key={opt.id} onClick={() => applyProbeAnswer(q.id, opt.label)}>
+                                        {opt.label}
+                                      </Button>
+                                    ))}
+                                    <Input
+                                      key={`input-${q.id}`}
+                                      placeholder="其他（请输入）"
+                                      style={{ width: 200 }}
+                                      value={customProbeOptions[q.id] || ''}
+                                      onChange={(e) => setCustomProbeOptions({ ...customProbeOptions, [q.id]: e.target.value })}
+                                      onPressEnter={() => {
+                                        const customValue = customProbeOptions[q.id]?.trim();
+                                        if (customValue) {
+                                          applyProbeAnswer(q.id, customValue);
+                                          setCustomProbeOptions({ ...customProbeOptions, [q.id]: '' });
+                                        }
+                                      }}
+                                    />
+                                    <Button
+                                      key={`add-${q.id}`}
+                                      onClick={() => {
+                                        const customValue = customProbeOptions[q.id]?.trim();
+                                        if (customValue) {
+                                          applyProbeAnswer(q.id, customValue);
+                                          setCustomProbeOptions({ ...customProbeOptions, [q.id]: '' });
+                                        }
+                                      }}
+                                    >
+                                      添加
+                                    </Button>
+                                  </Space>
+                                </Card>
+                              ))}
+                            </Space>
+                          )}
+                        </>
                       )}
-                    </Space>
                     </div>
                   </Card>
                 </Col>
+                {isExpertMode && (
                 <Col xs={24} xl={10}>
                   <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                    <Card title="全局配置" style={{ borderRadius: 8 }}>
+                      <Space direction="vertical" style={{ width: '100%' }}>
+                        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                          <Text type="secondary">模型选择</Text>
+                          <Select
+                            style={{ width: 200 }}
+                            value={selectedModelId}
+                            onChange={setSelectedModelId}
+                            options={models.map((m) => ({ value: m.id, label: m.name }))}
+                            loading={loadingModels}
+                            placeholder="请选择大模型"
+                          />
+                        </Space>
+                        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                          <Text type="secondary">全局提示词 (System Prompt)</Text>
+                          <Button type="link" size="small" onClick={() => setSystemPrompt(promptTemplates.prompt_base || '')}>重置默认</Button>
+                        </Space>
+                        <Input.TextArea
+                          rows={4}
+                          value={systemPrompt}
+                          onChange={(e) => setSystemPrompt(e.target.value)}
+                          placeholder="可选：输入全局系统提示词，这将影响所有角色的行为"
+                        />
+                      </Space>
+                    </Card>
                     <Card title="期望结果" style={{ borderRadius: 8 }}>
                       <Space direction="vertical" size={10} style={{ width: '100%' }}>
                         <Input.TextArea
@@ -1815,6 +2354,7 @@ ${userText}
                     </Card>
                   </Space>
                 </Col>
+                )}
               </Row>
             )}
 
@@ -2029,20 +2569,77 @@ ${userText}
               />
             </Modal>
 
+            <Modal
+              title="输入新点子"
+              open={newIdeaModalOpen}
+              onCancel={() => {
+                setNewIdeaModalOpen(false);
+                setNewIdeaDraft('');
+              }}
+              onOk={() => {
+                const idea = newIdeaDraft.trim();
+                if (!idea) {
+                  message.warning('请输入新点子');
+                  return;
+                }
+                setNewIdeaModalOpen(false);
+                setNewIdeaDraft('');
+                applyDirectorAction('new_idea', idea);
+              }}
+              okText="提交给圆桌"
+              cancelText="取消"
+            >
+              <Input.TextArea
+                rows={4}
+                value={newIdeaDraft}
+                onChange={(e) => setNewIdeaDraft(e.target.value)}
+                placeholder="输入你希望圆桌立即评估的新想法"
+              />
+            </Modal>
+
             {step === 'roundtable_view' && (
-              <Row gutter={16} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-                {/* 左侧：对话流 */}
-                <Col xs={24} xl={17} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' }}>
-                  <Card
-                    title={
-                      <Space>
-                        <span>圆桌空间</span>
-                        <Tag>{messages.length}</Tag>
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                {/* 顶部：目标达成度进度条 */}
+                <Card size="small" style={{ marginBottom: 16, borderRadius: 8 }}>
+                  <Row align="middle" gutter={16}>
+                    <Col>
+                      <Text strong>目标达成度：</Text>
+                    </Col>
+                    <Col flex="auto">
+                      <Tooltip title={judgeReason || '等待裁判评估中...'}>
+                        <Progress 
+                          percent={judgeScore} 
+                          status={judgeScore >= 90 ? 'success' : 'active'} 
+                          strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+                        />
+                      </Tooltip>
+                    </Col>
+                    <Col>
+                      <Space direction="vertical" size={0}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {judgeReason || '等待裁判评估中...'}
+                        </Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          共识 {judgeState.consensusCount} · 已解痛点 {judgeState.resolvedPainPoints} · 后台任务 {runtimePendingTasks}
+                        </Text>
                       </Space>
-                    }
-                    style={{ borderRadius: 8, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-                    bodyStyle={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
-                  >
+                    </Col>
+                  </Row>
+                </Card>
+
+                <Row gutter={16} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                  {/* 左侧：对话流 */}
+                  <Col xs={24} xl={17} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' }}>
+                    <Card
+                      title={
+                        <Space>
+                          <span>圆桌空间</span>
+                          <Tag>{messages.length}</Tag>
+                        </Space>
+                      }
+                      style={{ borderRadius: 8, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+                      bodyStyle={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+                    >
                     {!roomReady && <Empty description="请先完成需求识别与角色确认" />}
                     {roomReady && (
                       <div style={{ flex: 1, minHeight: 0, maxHeight: 'calc(100vh - 350px)', overflowY: 'auto', padding: '0 16px 16px', overflowX: 'hidden' }}>
@@ -2107,6 +2704,9 @@ ${userText}
                         <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => setMaxDialogueRounds(Number(v || 6))} />
                       </Space>
                       <Text type="secondary">当前轮次：{autoRoundCount}/{maxDialogueRounds}</Text>
+                      <Text type="secondary">
+                        当前建议焦点：{judgeState.nextFocus || '等待后台裁判输出下一步建议'}
+                      </Text>
                       <Input.TextArea
                         rows={3}
                         value={expectedResult}
@@ -2138,6 +2738,53 @@ ${userText}
                     </Space>
                   </Card>
 
+                  <Card
+                    title={
+                      <Space>
+                        <span>书记员看板</span>
+                        <Tag color={consensusBoard.disputes.length > 0 ? 'orange' : 'green'}>
+                          {consensusBoard.disputes.length > 0 ? '存在争议' : '持续收敛'}
+                        </Tag>
+                      </Space>
+                    }
+                    style={{ borderRadius: 8, overflow: 'hidden' }}
+                    bodyStyle={{ maxHeight: 'calc(100vh - 560px)', overflowY: 'auto' }}
+                  >
+                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                      <Text>{consensusBoard.summary || '书记员正在整理当前共识与争议...'}</Text>
+                      <div>
+                        <Text strong>当前共识</Text>
+                        <List
+                          size="small"
+                          dataSource={consensusBoard.consensus.slice(0, 4)}
+                          locale={{ emptyText: '暂无共识' }}
+                          renderItem={(text) => (
+                            <List.Item style={{ border: 'none', padding: '6px 0' }}>
+                              <Text>{text}</Text>
+                            </List.Item>
+                          )}
+                        />
+                      </div>
+                      <div>
+                        <Text strong>核心争议</Text>
+                        <List
+                          size="small"
+                          dataSource={consensusBoard.disputes.slice(0, 2)}
+                          locale={{ emptyText: '暂无争议' }}
+                          renderItem={(item) => (
+                            <List.Item style={{ border: 'none', padding: '6px 0' }}>
+                              <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                                <Text strong>{item.topic || '未命名争议'}</Text>
+                                <Text type="secondary">正方：{item.pro || '待补充'}</Text>
+                                <Text type="secondary">反方：{item.con || '待补充'}</Text>
+                              </Space>
+                            </List.Item>
+                          )}
+                        />
+                      </div>
+                    </Space>
+                  </Card>
+
                   {/* 共识摘要预览 */}
                   <Card
                     title={
@@ -2166,7 +2813,8 @@ ${userText}
                     />
                   </Card>
                 </Col>
-              </Row>
+                </Row>
+              </div>
             )}
 
             {/* 共识摘要独立页面 */}
@@ -2178,10 +2826,7 @@ ${userText}
                 roles={roles}
                 canvasConsensus={canvasConsensus}
                 canvasDisputes={canvasDisputes}
-                canvasUpdatedAt={canvasUpdatedAt}
                 roundtableStage={roundtableStage}
-                maxDialogueRounds={maxDialogueRounds}
-                autoRoundCount={autoRoundCount}
               />
             )}
 
@@ -2194,7 +2839,12 @@ ${userText}
                   intentAnchor={intentCard.coreGoal}
                   messages={messages}
                   roles={roles}
+                  expectedResult={expectedResult}
+                  canvasConsensus={canvasConsensus}
+                  roundtableStage={roundtableStage}
                   onUpdatedAtChange={setCanvasUpdatedAt}
+                  initialSnapshotData={canvasSnapshot}
+                  onSnapshotChange={(snapshot) => setCanvasSnapshot(snapshot)}
                 />
               </div>
             )}
@@ -2222,14 +2872,23 @@ ${userText}
               {(step === 'roundtable_view') && (
               <Row gutter={12} align="middle">
                 <Col flex="auto">
-                  <Input.TextArea
-                    rows={3}
-                    maxLength={1000}
-                    showCount
-                    value={userPrompt}
-                    onChange={(e) => setUserPrompt(e.target.value)}
-                    placeholder="输入你的观点/问题（你是特殊角色，可通过系统提示词纠偏整个圆桌）"
-                  />
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    <Space style={{ marginBottom: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>🎬 超级导演干预：</Text>
+                      <Button size="small" onClick={() => applyDirectorAction('focus')}>🎯 跑题拉回</Button>
+                      <Button size="small" onClick={() => applyDirectorAction('conflict')}>⚔️ 加大对抗</Button>
+                      <Button size="small" onClick={() => setNewIdeaModalOpen(true)}>💡 提新点子</Button>
+                      <Button size="small" onClick={() => applyDirectorAction('summarize')} danger>🛑 直接总结</Button>
+                    </Space>
+                    <Input.TextArea
+                      rows={3}
+                      maxLength={1000}
+                      showCount
+                      value={userPrompt}
+                      onChange={(e) => setUserPrompt(e.target.value)}
+                      placeholder="输入你的观点/问题（你是特殊角色，可通过系统提示词纠偏整个圆桌）"
+                    />
+                  </Space>
                 </Col>
                 <Col>
                   <Space direction="vertical">
@@ -2248,7 +2907,8 @@ ${userText}
         </Layout>
       </Layout>
     </Layout>
-    </>  );
-};
+    </>
+  );
 
+}
 export default Home;

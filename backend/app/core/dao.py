@@ -2,11 +2,14 @@
 数据库工具模块
 提供分页等通用数据库操作
 """
-from typing import TypeVar, Generic, Type, List, Optional
+from typing import TypeVar, Generic, Type, List, Optional, Tuple
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.database import Base
+try:
+    from backend.app.core.database import Base
+except ImportError:
+    from app.core.database import Base
 
 ModelType = TypeVar("ModelType", bound=Base)
 
@@ -60,7 +63,7 @@ class BaseDAO(Generic[ModelType]):
         page: int = 1,
         page_size: int = 20,
         filters: Optional[List] = None
-    ) -> tuple[List[ModelType], int]:
+    ) -> Tuple[List[ModelType], int]:
         """
         分页获取记录
         

@@ -13,6 +13,7 @@ from app.models.prompt import SysPrompt
 from app.models.style import StyleConfig
 from app.models.role_template import RoleTemplate
 from app.models.roundtable_config import RoundtableConfig
+from app.models.scenario_template import ScenarioTemplate
 
 # 默认系统提示词
 DEFAULT_PROMPTS = [
@@ -197,13 +198,13 @@ DEFAULT_ROUNDTABLE_CONFIGS = [
     },
     {
         "config_key": "prompt_audit_brief",
-        "config_value": "当前处于「脑暴发散阶段」。\n只输出核心要点：3-5 条，短句，单条不超过 20 个字。\n不要输出总结性方案，不要写步骤/里程碑/落地计划。\n你是审计官：请用\"优点/缺点\"各 2-3 条进行严格评审（同样要短）。\n用 Markdown 输出，建议使用无序列表。",
+        "config_value": "当前处于「脑暴发散阶段」。\n只输出核心要点：3-5 条，短句，单条不超过 20 个字。\n不要输出总结性方案，不要写步骤/里程碑/落地计划。\n你是审计官：请用\"优点/缺点\"各 2-3 条进行严格评审（同样要短）。",
         "description": "审计官脑暴阶段提示词",
         "is_active": True,
     },
     {
         "config_key": "prompt_audit_final",
-        "config_value": "当前处于「收敛定稿阶段」。\n请基于当前对话给出总结性方案：目标拆解 → 关键路径 → 风险与对策 → 指标与验证 → 下一步行动清单。\n你是审计官：在方案后补充\"优缺点/风险/需要补证的数据与实验\"。\n用 Markdown 输出，结构清晰。",
+        "config_value": "当前处于「收敛定稿阶段」。\n请基于当前对话给出总结性方案：目标拆解 → 关键路径 → 风险与对策 → 指标与验证 → 下一步行动清单。\n你是审计官：在方案后补充\"优缺点/风险/需要补证的数据与实验\"。",
         "description": "审计官收敛阶段提示词",
         "is_active": True,
     },
@@ -212,6 +213,34 @@ DEFAULT_ROUNDTABLE_CONFIGS = [
         "config_value": "我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。",
         "description": "触发收敛阶段的用户消息",
         "is_active": True,
+    },
+]
+
+# 默认场景模板
+DEFAULT_SCENARIO_TEMPLATES = [
+    {
+        "name": "产品功能杀手局",
+        "description": "激进产品经理、保守老用户、技术架构师。适合做产品功能减法、激进创新方案的压力测试。",
+        "preset_roles": [1, 2, 4], # 产品策略官、技术架构师、黑帽风控官
+        "system_prompt_override": "这是一场关于产品功能的生死辩论。各位需要毫不留情地指出方案的致命缺陷。",
+        "is_active": True,
+        "sort_order": 1,
+    },
+    {
+        "name": "职业发展拷问局",
+        "description": "现实主义长辈、理想主义导师、冷酷HR。适合面临职业抉择、跳槽、创业等重大人生选择。",
+        "preset_roles": [3, 4, 5], # 增长运营官(充当现实考量)、黑帽风控官(充当HR)、审计官(充当长辈)
+        "system_prompt_override": "这是一场针对个人职业规划的灵魂拷问。请从极度现实和长远发展的双重角度给出建议。",
+        "is_active": True,
+        "sort_order": 2,
+    },
+    {
+        "name": "商业方案路演局",
+        "description": "挑剔投资人、合规法务、市场营销专家。适合商业计划书打磨、融资路演前的模拟答辩。",
+        "preset_roles": [1, 3, 5], # 产品策略官(充当市场)、增长运营官(充当投资人)、审计官(充当法务)
+        "system_prompt_override": "这是一场模拟融资路演。请用最挑剔的投资人眼光来审视这个商业方案。",
+        "is_active": True,
+        "sort_order": 3,
     },
 ]
 
@@ -256,6 +285,15 @@ async def init_database():
             if not existing.scalar():
                 await session.execute(RoundtableConfig.__table__.insert().values(**config_data))
                 print(f"Inserted roundtable config: {config_data['config_key']}")
+
+        # 插入场景模板
+        for scenario_data in DEFAULT_SCENARIO_TEMPLATES:
+            existing = await session.execute(
+                ScenarioTemplate.__table__.select().where(ScenarioTemplate.__table__.c.name == scenario_data["name"])
+            )
+            if not existing.scalar():
+                await session.execute(ScenarioTemplate.__table__.insert().values(**scenario_data))
+                print(f"Inserted scenario template: {scenario_data['name']}")
         
         await session.commit()
         print("\n数据库初始化完成！")

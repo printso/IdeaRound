@@ -15,6 +15,7 @@ class MaterialFormat(str, Enum):
     DOC = "doc"
     DOCX = "docx"
     TXT = "txt"
+    MD = "md"
     JPG = "jpg"
     JPEG = "jpeg"
     PNG = "png"
@@ -28,6 +29,7 @@ ALLOWED_EXTENSIONS = {
     MaterialFormat.DOC: ["application/msword"],
     MaterialFormat.DOCX: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
     MaterialFormat.TXT: ["text/plain"],
+    MaterialFormat.MD: ["text/markdown", "text/x-markdown", "application/x-markdown"],
     MaterialFormat.JPG: ["image/jpeg"],
     MaterialFormat.JPEG: ["image/jpeg"],
     MaterialFormat.PNG: ["image/png"],
@@ -39,6 +41,8 @@ FILE_EXTENSION_MAP = {
     ".doc": MaterialFormat.DOC,
     ".docx": MaterialFormat.DOCX,
     ".txt": MaterialFormat.TXT,
+    ".md": MaterialFormat.MD,
+    ".markdown": MaterialFormat.MD,
     ".jpg": MaterialFormat.JPG,
     ".jpeg": MaterialFormat.JPEG,
     ".png": MaterialFormat.PNG,
@@ -63,7 +67,7 @@ MAX_FILE_SIZES = {
 }
 
 SUPPORTED_FORMATS = {
-    MaterialType.DOCUMENT: {MaterialFormat.PDF, MaterialFormat.DOC, MaterialFormat.DOCX, MaterialFormat.TXT},
+    MaterialType.DOCUMENT: {MaterialFormat.PDF, MaterialFormat.DOC, MaterialFormat.DOCX, MaterialFormat.TXT, MaterialFormat.MD},
     MaterialType.IMAGE: {MaterialFormat.JPG, MaterialFormat.JPEG, MaterialFormat.PNG, MaterialFormat.GIF},
     MaterialType.AUDIO: {MaterialFormat.MP3, MaterialFormat.WAV},
     MaterialType.VIDEO: {MaterialFormat.MP4},
