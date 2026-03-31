@@ -93,7 +93,7 @@ export const uploadMaterial = async (
 ): Promise<MaterialInfo> => {
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('room_id', roomId);
+  // room_id 作为 Query 参数传递，不放在 FormData 中
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -126,7 +126,9 @@ export const uploadMaterial = async (
       reject(new Error('Network error during upload'));
     };
 
-    xhr.open('POST', `${API_BASE_URL}upload`);
+    // room_id 作为 Query 参数附加到 URL
+    const url = `${API_BASE_URL}upload?room_id=${encodeURIComponent(roomId)}`;
+    xhr.open('POST', url);
     const token = localStorage.getItem('access_token');
     if (token) {
       xhr.setRequestHeader('Authorization', `Bearer ${token}`);

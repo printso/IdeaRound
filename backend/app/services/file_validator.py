@@ -27,7 +27,11 @@ class MaterialFormat(str, Enum):
 ALLOWED_EXTENSIONS = {
     MaterialFormat.PDF: ["application/pdf"],
     MaterialFormat.DOC: ["application/msword"],
-    MaterialFormat.DOCX: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    # .docx 文件本质是 ZIP，某些系统可能识别为 application/zip
+    MaterialFormat.DOCX: [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/zip",
+    ],
     MaterialFormat.TXT: ["text/plain"],
     MaterialFormat.MD: ["text/markdown", "text/x-markdown", "application/x-markdown"],
     MaterialFormat.JPG: ["image/jpeg"],

@@ -21,6 +21,23 @@ const getAuthHeaders = () => {
   return headers;
 };
 
+// 转换驼峰命名为蛇形命名
+const toSnakeCase = (obj: any): any => {
+  if (Array.isArray(obj)) {
+    return obj.map(toSnakeCase);
+  }
+  if (obj && typeof obj === 'object') {
+    const result: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      // 转换驼峰为蛇形
+      const snakeKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+      result[snakeKey] = toSnakeCase(value);
+    }
+    return result;
+  }
+  return obj;
+};
+
 export interface WorkspaceData {
   room_id: string;
   room_name: string;
@@ -102,13 +119,16 @@ export interface WorkspaceResponse {
  */
 export const createWorkspace = async (workspaceData: WorkspaceData): Promise<WorkspaceResponse> => {
   try {
+    // 转换数据为蛇形命名以匹配后端 schema
+    const snakeCaseData = toSnakeCase(workspaceData);
+    
     const response = await fetch(buildWorkspaceUrl(), {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({
         room_id: workspaceData.room_id,
         room_name: workspaceData.room_name,
-        data: workspaceData,
+        data: snakeCaseData,
       }),
     });
 
@@ -200,11 +220,14 @@ export const getWorkspace = async (roomId: string): Promise<WorkspaceResponse | 
  */
 export const updateWorkspace = async (roomId: string, workspaceData: WorkspaceData): Promise<WorkspaceResponse> => {
   try {
+    // 转换数据为蛇形命名以匹配后端 schema
+    const snakeCaseData = toSnakeCase(workspaceData);
+    
     const response = await fetch(buildWorkspaceUrl(roomId), {
       method: 'PUT',
       headers: getAuthHeaders(),
       body: JSON.stringify({
-        data: workspaceData,
+        data: snakeCaseData,
       }),
     });
 

@@ -66,7 +66,7 @@ const ScenarioTemplateManagement: React.FC = () => {
       const response = await fetch('/api/v1/role-templates/');
       if (response.ok) {
         const data = await response.json();
-        setRoleOptions(data);
+        setRoleOptions(data.templates || []);
       }
     } catch {
       console.error('加载角色模板失败');

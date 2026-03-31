@@ -151,12 +151,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setToken(data.access_token);
       setRefreshToken(data.refresh_token);
       
-      // 使用新 token 获取用户信息
-      await fetchUserInfo(data.access_token);
+      const userLoaded = await fetchUserInfo(data.access_token);
+      if (!userLoaded) {
+        throw new Error('登录成功，但获取用户信息失败');
+      }
       
       message.success('登录成功');
-    } catch (error: any) {
-      message.error(error.message || '登录失败，请检查用户名和密码');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '登录失败，请检查用户名和密码';
+      message.error(errorMessage);
       throw error;
     }
   };

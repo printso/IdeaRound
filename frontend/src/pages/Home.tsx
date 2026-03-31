@@ -22,6 +22,7 @@ import {
   Progress,
   Tooltip,
 } from 'antd';
+import { DownOutlined, UpOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -216,6 +217,7 @@ function Home() {
   const [roomReady, setRoomReady] = useState(savedState?.roomReady || false);
   const [roomId, setRoomId] = useState(savedState?.roomId || '');
   const [autoBrainstorm, setAutoBrainstorm] = useState(true);
+  const [rightPanels, setRightPanels] = useState({ control: false, consensus: false });
   const [systemPrompt, setSystemPrompt] = useState(savedState?.systemPrompt || '');
   const [userPrompt, setUserPrompt] = useState('');
   const [sending, setSending] = useState(false);
@@ -749,7 +751,15 @@ function Home() {
       const response = await fetch('/api/v1/role-templates/');
       if (response.ok) {
         const data = await response.json();
-        setRoleTemplates(data);
+        // API 返回格式为 { total, templates, stats }，需要提取 templates 数组
+        if (data && Array.isArray(data.templates)) {
+          setRoleTemplates(data.templates);
+        } else if (Array.isArray(data)) {
+          setRoleTemplates(data);
+        } else {
+          console.error('角色模板数据格式不正确:', data);
+          setRoleTemplates([]);
+        }
       }
     } catch (e) {
       console.error('加载角色模板失败:', e);
@@ -761,7 +771,15 @@ function Home() {
       const response = await fetch('/api/v1/scenario-templates/');
       if (response.ok) {
         const data = await response.json();
-        setScenarioTemplates(data);
+        // 处理可能的分页格式 { total, templates } 或直接数组
+        if (data && Array.isArray(data.templates)) {
+          setScenarioTemplates(data.templates);
+        } else if (Array.isArray(data)) {
+          setScenarioTemplates(data);
+        } else {
+          console.error('场景模板数据格式不正确:', data);
+          setScenarioTemplates([]);
+        }
       }
     } catch (e) {
       console.error('加载场景模板失败:', e);
@@ -970,6 +988,97 @@ function Home() {
     ];
   };
 
+  // 基于意图和大模型智能选择角色
+  const generateRolesByIntentWithAI = async (
+    intentData: IntentCardState,
+    availableTemplates: typeof roleTemplates
+  ): Promise<RoleMember[]> => {
+    if (!selectedModelId || availableTemplates.length === 0) {
+      // Fallback: 返回默认角色组合
+      return availableTemplates
+        .filter((tpl) => tpl.is_default || ['建设', '对抗', '评审'].includes(tpl.stance))
+        .slice(0, 5)
+        .map((tpl) => ({
+          id: `role_${tpl.id}`,
+          name: tpl.name,
+          stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+          desc: tpl.description || '',
+          selected: true,
+          soulConfig: tpl.soul_config,
+        }));
+    }
+
+    // 构建角色候选列表
+    const roleCandidates = availableTemplates
+      .filter((tpl) => tpl.is_active !== false)
+      .map((tpl) => ({
+        id: tpl.id,
+        name: tpl.name,
+        stance: tpl.stance,
+        description: tpl.description || '',
+        skill_tags: tpl.skill_tags || [],
+        category: tpl.category || '',
+      }));
+
+    const prompt = `你是一位专业的"圆桌讨论角色配置专家"。请根据以下需求意图，从候选角色列表中选择最适合参与讨论的角色。
+
+【需求意图】
+核心目标：${intentData.coreGoal || '无'}
+限制条件：${intentData.constraints || '无'}
+核心痛点：${intentData.painPoints || '无'}
+
+【候选角色列表】
+${JSON.stringify(roleCandidates, null, 2)}
+
+【选择要求】
+1. 选择 3-6 个角色，确保覆盖不同立场（建设、对抗、中立、评审）
+2. 优先选择与需求领域相关的专业角色
+3. 确保有至少一个建设型角色和一个对抗/评审型角色形成思维碰撞
+4. 返回严格的 JSON 数组格式，只包含选中的角色 ID：
+[1, 5, 8]  // 示例：只返回 ID 数组`;
+
+    try {
+      const rawJson = await collectModelText(
+        prompt,
+        '你是一个专业的角色配置助手，只输出 JSON 格式的角色 ID 数组，不要有任何其他解释文字。'
+      );
+      const selectedIds = parseJsonObject(rawJson);
+
+      if (Array.isArray(selectedIds) && selectedIds.length > 0) {
+        // 根据大模型选择的 ID 生成角色列表
+        const selectedRoles = availableTemplates
+          .filter((tpl) => selectedIds.includes(tpl.id))
+          .map((tpl) => ({
+            id: `role_${tpl.id}`,
+            name: tpl.name,
+            stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+            desc: tpl.description || '',
+            selected: true,
+            soulConfig: tpl.soul_config,
+          }));
+
+        if (selectedRoles.length > 0) {
+          return selectedRoles;
+        }
+      }
+    } catch (error) {
+      console.error('AI 角色选择失败:', error);
+    }
+
+    // Fallback: 使用默认逻辑
+    return availableTemplates
+      .filter((tpl) => tpl.is_default)
+      .slice(0, 5)
+      .map((tpl) => ({
+        id: `role_${tpl.id}`,
+        name: tpl.name,
+        stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+        desc: tpl.description || '',
+        selected: true,
+        soulConfig: tpl.soul_config,
+      }));
+  };
+
   const startIntentProbing = async () => {
     if (!initialDemand.trim() && uploadedMaterials.length === 0) {
       message.warning('请先输入你的需求或上传相关材料');
@@ -1027,17 +1136,8 @@ function Home() {
           setIntentReady(true);
           setStep('roles');
           
-          // 自动匹配基础角色
-          const generatedRoles: RoleMember[] = roleTemplates
-            .filter((tpl) => tpl.is_default || tpl.name.includes('黑帽') || tpl.name.includes('审计'))
-            .map((tpl) => ({
-              id: `role_${tpl.id}`,
-              name: tpl.name,
-              stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
-              desc: tpl.description || '',
-              selected: true,
-              soulConfig: tpl.soul_config,
-            }));
+          // 使用 AI 智能匹配角色
+          const generatedRoles = await generateRolesByIntentWithAI(newIntent, roleTemplates);
           setRoles(generatedRoles);
           
           // 可以在这里自动生成预期结果
@@ -1045,7 +1145,7 @@ function Home() {
           setExpectedResult(generatedResult);
 
           loadingMsg();
-          message.success('需求分析完毕，已为您匹配专业角色阵型');
+          message.success('需求分析完毕，AI 已为您智能匹配专业角色阵型');
         } else {
           throw new Error('JSON 解析失败');
         }
@@ -1107,20 +1207,34 @@ function Home() {
     setIntentReady(true);
     setStep('roles');
 
-    // 从数据库加载的角色模板生成角色
-    const generatedRoles: RoleMember[] = roleTemplates
-      .filter((tpl) => tpl.is_active !== false)
-      .map((tpl) => ({
-        id: `role_${tpl.id}`,
-        name: tpl.name,
-        stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
-        desc: tpl.description || '',
-        selected: true,
-        soulConfig: tpl.soul_config,
-      }));
-
-    setRoles(generatedRoles);
-    message.success('意图洞察完成，已生成初始角色矩阵');
+    // 使用大模型智能选择角色
+    const loadingMsg = message.loading('正在根据意图智能匹配最佳角色组合...', 0);
+    try {
+      const generatedRoles = await generateRolesByIntentWithAI(
+        values as IntentCardState,
+        roleTemplates
+      );
+      setRoles(generatedRoles);
+      message.success('意图洞察完成，AI 已为您智能匹配最佳角色矩阵');
+    } catch (error) {
+      console.error('角色生成失败:', error);
+      message.error('角色匹配失败，已使用默认角色组合');
+      // Fallback 到默认角色
+      const fallbackRoles = roleTemplates
+        .filter((tpl) => tpl.is_default)
+        .slice(0, 5)
+        .map((tpl) => ({
+          id: `role_${tpl.id}`,
+          name: tpl.name,
+          stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+          desc: tpl.description || '',
+          selected: true,
+          soulConfig: tpl.soul_config,
+        }));
+      setRoles(fallbackRoles);
+    } finally {
+      loadingMsg();
+    }
   };
 
   const toggleRoleSelected = (roleId: string) => {
@@ -2627,7 +2741,7 @@ ${userText}
                   </Row>
                 </Card>
 
-                <Row gutter={16} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                <Row gutter={16} style={{ flex: 1, minHeight: 0, overflow: 'visible' }}>
                   {/* 左侧：对话流 */}
                   <Col xs={24} xl={17} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' }}>
                     <Card
@@ -2690,54 +2804,9 @@ ${userText}
                   </Card>
                 </Col>
 
-                {/* 右侧：对话控制（占30%） */}
-                <Col xs={24} xl={7} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' }}>
-                  {/* 对话控制 */}
-                  <Card title="对话控制" style={{ borderRadius: 8 }}>
-                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                        <Text>群聊模式</Text>
-                        <Switch checked={autoBrainstorm} onChange={(v) => setAutoBrainstorm(v)} />
-                      </Space>
-                      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                        <Text>对话轮数上限</Text>
-                        <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => setMaxDialogueRounds(Number(v || 6))} />
-                      </Space>
-                      <Text type="secondary">当前轮次：{autoRoundCount}/{maxDialogueRounds}</Text>
-                      <Text type="secondary">
-                        当前建议焦点：{judgeState.nextFocus || '等待后台裁判输出下一步建议'}
-                      </Text>
-                      <Input.TextArea
-                        rows={3}
-                        value={expectedResult}
-                        onChange={(e) => setExpectedResult(e.target.value)}
-                        placeholder="可在对话中修改期望结果，后续自动收敛将按新目标继续。"
-                      />
-                      <Space wrap>
-                        <Button type="primary" disabled={!roomReady || sending || messages.length === 0} onClick={generateFinalPlan}>
-                          生成最终方案
-                        </Button>
-                        <Button
-                          onClick={() => {
-                            setMessages([]);
-                            setCanvasConsensus([]);
-                            setCanvasDisputes([]);
-                            setCanvasUpdatedAt(new Date().toLocaleString());
-                            setRoundtableStage('brief');
-                            setAutoRoundCount(0);
-                            setPendingAutoSend(null);
-                            setAutoConversationEnabled(false);
-                          }}
-                        >
-                          清空讨论
-                        </Button>
-                        <Button danger disabled={!sending} onClick={stopStreaming}>
-                          停止生成
-                        </Button>
-                      </Space>
-                    </Space>
-                  </Card>
-
+                {/* 右侧：书记员看板（占30%） */}
+                <Col xs={24} xl={7} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
+                  {/* 书记员看板 — 始终展开，置顶 */}
                   <Card
                     title={
                       <Space>
@@ -2747,8 +2816,8 @@ ${userText}
                         </Tag>
                       </Space>
                     }
-                    style={{ borderRadius: 8, overflow: 'hidden' }}
-                    bodyStyle={{ maxHeight: 'calc(100vh - 560px)', overflowY: 'auto' }}
+                    style={{ borderRadius: 8 }}
+                    bodyStyle={{ maxHeight: 'calc(100vh - 420px)', overflowY: 'auto' }}
                   >
                     <Space direction="vertical" size={10} style={{ width: '100%' }}>
                       <Text>{consensusBoard.summary || '书记员正在整理当前共识与争议...'}</Text>
@@ -2785,33 +2854,6 @@ ${userText}
                     </Space>
                   </Card>
 
-                  {/* 共识摘要预览 */}
-                  <Card
-                    title={
-                      <Space>
-                        <span>共识摘要</span>
-                        <Tag color="green">{canvasConsensus.length} 项</Tag>
-                      </Space>
-                    }
-                    extra={
-                      <Button type="link" size="small" onClick={() => setStep('consensus_summary')}>
-                        查看全部
-                      </Button>
-                    }
-                    style={{ borderRadius: 8, overflow: 'hidden' }}
-                    bodyStyle={{ maxHeight: 'calc(100vh - 600px)', overflowY: 'auto' }}
-                  >
-                    <List
-                      size="small"
-                      dataSource={canvasConsensus.slice(0, 3)}
-                      locale={{ emptyText: '暂无共识' }}
-                      renderItem={(text) => (
-                        <List.Item style={{ border: 'none', padding: '8px 0' }}>
-                          <Text ellipsis>{text}</Text>
-                        </List.Item>
-                      )}
-                    />
-                  </Card>
                 </Col>
                 </Row>
               </div>

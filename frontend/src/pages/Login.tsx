@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Form, Input, Button, Card, Typography } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -6,18 +6,26 @@ import { useAuth } from '../contexts/AuthContext';
 
 const { Title, Text } = Typography;
 
+interface LoginFormValues {
+  username: string;
+  password: string;
+}
+
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, isAuthenticated, isLoading } = useAuth();
   const [loading, setLoading] = useState(false);
 
-  const onFinish = async (values: any) => {
+  useEffect(() => {
+    if (!isLoading && isAuthenticated) {
+      navigate('/', { replace: true });
+    }
+  }, [isAuthenticated, isLoading, navigate]);
+
+  const onFinish = async (values: LoginFormValues) => {
     setLoading(true);
     try {
       await login(values.username, values.password);
-      navigate('/');
-    } catch (error) {
-      // 错误信息已在 useAuth 中处理
     } finally {
       setLoading(false);
     }

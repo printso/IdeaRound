@@ -36,8 +36,9 @@ async def create_llm_config(config: LLMConfigCreate, db: AsyncSession = Depends(
     result = await db.execute(select(LLMConfig).where(LLMConfig.name == config.name))
     if result.scalars().first():
         raise HTTPException(status_code=400, detail="LLM Config with this name already exists")
-    
-    db_config = LLMConfig(**config.model_dump())
+
+    from datetime import datetime
+    db_config = LLMConfig(**config.model_dump(), created_at=datetime.now(), updated_at=datetime.now())
     db.add(db_config)
     await db.commit()
     await db.refresh(db_config)

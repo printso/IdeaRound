@@ -319,7 +319,7 @@ const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
 
   return (
     <div style={{ padding: 16, background: '#f5f5f5', height: 'calc(100vh - 64px)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-      {/* 顶部：需求锚点 + 操作 */}
+      {/* 顶部：需求锚点 + 操作 - 限制最大高度 */}
       <Card
         style={{
           borderRadius: 12,
@@ -327,16 +327,28 @@ const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
           background: 'linear-gradient(135deg, #1890ff 0%, #0958d9 100%)',
           border: 'none',
           flexShrink: 0,
+          maxHeight: '120px',
         }}
-        bodyStyle={{ padding: '16px 20px' }}
+        bodyStyle={{ padding: '12px 20px' }}
       >
         <Row justify="space-between" align="middle">
-          <Col>
-            <Space direction="vertical" size={4}>
+          <Col flex="1" style={{ minWidth: 0, marginRight: 16 }}>
+            <Space direction="vertical" size={2} style={{ width: '100%' }}>
               <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13 }}>
                 <AimOutlined /> 需求锚点
               </Text>
-              <Text strong style={{ color: '#fff', fontSize: 16 }}>
+              <Text 
+                strong 
+                style={{ 
+                  color: '#fff', 
+                  fontSize: 16,
+                  display: 'block',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+                title={intentCard.coreGoal || '未指定'}
+              >
                 {intentCard.coreGoal || '未指定'}
               </Text>
               <Space size={8}>
@@ -462,58 +474,62 @@ const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
         </Col>
 
         <Col span={8} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-          {/* 期望结果 */}
-          <Card title="期望结果" style={{ borderRadius: 12, marginBottom: 12 }}>
-            <Paragraph style={{ marginBottom: 0 }} ellipsis={{ rows: 3, expandable: true }}>
-              {expectedResult || '未指定'}
-            </Paragraph>
-          </Card>
-
-          {/* 约束与痛点 - 简化显示 */}
-          {(intentCard.constraints || intentCard.painPoints) && (
-            <Card title="约束与痛点" style={{ borderRadius: 12, marginBottom: 12 }}>
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                {intentCard.constraints && (
-                  <div>
-                    <Text type="secondary" style={{ fontSize: 12 }}>限制条件</Text>
-                    <Paragraph style={{ marginBottom: 0 }} ellipsis={{ rows: 2 }}>
-                      {intentCard.constraints}
-                    </Paragraph>
-                  </div>
-                )}
-                {intentCard.painPoints && (
-                  <div>
-                    <Text type="secondary" style={{ fontSize: 12 }}>待解决痛点</Text>
-                    <Paragraph style={{ marginBottom: 0 }} ellipsis={{ rows: 2 }}>
-                      {intentCard.painPoints}
-                    </Paragraph>
-                  </div>
-                )}
-              </Space>
+          {/* 右侧信息栏 - 限制高度，内部滚动 */}
+          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+            {/* 期望结果 */}
+            <Card title="期望结果" style={{ borderRadius: 12, marginBottom: 12 }} size="small">
+              <Paragraph style={{ marginBottom: 0, fontSize: 13 }} ellipsis={{ rows: 3, expandable: true }}>
+                {expectedResult || '未指定'}
+              </Paragraph>
             </Card>
-          )}
 
-          {/* 参与角色 - 简化显示 */}
-          {roles.length > 0 && (
-            <Card title="参与角色" style={{ borderRadius: 12 }}>
-              <Space wrap size={[6, 6]}>
-                {roles.map((role) => (
-                  <Tag
-                    key={role.id}
-                    color={
-                      role.stance === '对抗'
-                        ? 'red'
-                        : role.stance === '评审'
-                          ? 'purple'
-                          : 'blue'
-                    }
-                  >
-                    {role.name}
-                  </Tag>
-                ))}
-              </Space>
-            </Card>
-          )}
+            {/* 约束与痛点 - 简化显示 */}
+            {(intentCard.constraints || intentCard.painPoints) && (
+              <Card title="约束与痛点" style={{ borderRadius: 12, marginBottom: 12 }} size="small">
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  {intentCard.constraints && (
+                    <div>
+                      <Text type="secondary" style={{ fontSize: 12 }}>限制条件</Text>
+                      <Paragraph style={{ marginBottom: 0, fontSize: 13 }} ellipsis={{ rows: 2 }}>
+                        {intentCard.constraints}
+                      </Paragraph>
+                    </div>
+                  )}
+                  {intentCard.painPoints && (
+                    <div>
+                      <Text type="secondary" style={{ fontSize: 12 }}>待解决痛点</Text>
+                      <Paragraph style={{ marginBottom: 0, fontSize: 13 }} ellipsis={{ rows: 2 }}>
+                        {intentCard.painPoints}
+                      </Paragraph>
+                    </div>
+                  )}
+                </Space>
+              </Card>
+            )}
+
+            {/* 参与角色 - 简化显示 */}
+            {roles.length > 0 && (
+              <Card title="参与角色" style={{ borderRadius: 12 }} size="small">
+                <Space wrap size={[4, 4]}>
+                  {roles.map((role) => (
+                    <Tag
+                      key={role.id}
+                      color={
+                        role.stance === '对抗'
+                          ? 'red'
+                          : role.stance === '评审'
+                            ? 'purple'
+                            : 'blue'
+                      }
+                      style={{ fontSize: 12 }}
+                    >
+                      {role.name}
+                    </Tag>
+                  ))}
+                </Space>
+              </Card>
+            )}
+          </div>
         </Col>
       </Row>
 
