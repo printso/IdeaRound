@@ -42,10 +42,13 @@ async def create_workspace(
             )
 
         # 创建新的工作台
+        from datetime import datetime
         db_workspace = DBWorkspace(
             user_id=current_user.id,
             room_id=workspace.room_id,
-            data=workspace.data.model_dump()
+            data=workspace.data.model_dump(),
+            created_at=datetime.now(),
+            updated_at=datetime.now()
         )
         db.add(db_workspace)
         await db.commit()

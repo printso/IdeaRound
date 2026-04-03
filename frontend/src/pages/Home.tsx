@@ -22,7 +22,7 @@ import {
   Progress,
   Tooltip,
 } from 'antd';
-import { DownOutlined, UpOutlined } from '@ant-design/icons';
+import { DownOutlined, UpOutlined, RedoOutlined, PlusOutlined, AppstoreAddOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -271,6 +271,10 @@ function Home() {
   const [editingSoulConfigRole, setEditingSoulConfigRole] = useState<RoleMember | null>(null);
   const [editingSoulConfigText, setEditingSoulConfigText] = useState('');
   const [newRoleName, setNewRoleName] = useState('');
+  const [addRoleModalVisible, setAddRoleModalVisible] = useState(false);
+  const [addRoleForm, setAddRoleForm] = useState({ name: '', stance: '建设' as '建设' | '对抗' | '中立' | '评审', desc: '' });
+  const [templatePickerVisible, setTemplatePickerVisible] = useState(false);
+  const [isReGeneratingRoles, setIsReGeneratingRoles] = useState(false);
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
   const [isExpertMode, setIsExpertMode] = useState(false);
   const [newIdeaModalOpen, setNewIdeaModalOpen] = useState(false);
@@ -1357,13 +1361,59 @@ ${JSON.stringify(roleCandidates, null, 2)}
     const newRole: RoleMember = {
       id: `custom_${Date.now()}`,
       name: newRoleName.trim(),
-      stance: '建设',
-      desc: '自定义角色',
+      stance: addRoleForm.stance,
+      desc: addRoleForm.desc.trim() || '自定义角色',
       selected: true,
     };
     setRoles((prev) => [...prev, newRole]);
     setNewRoleName('');
+    setAddRoleForm({ name: '', stance: '建设', desc: '' });
+    setAddRoleModalVisible(false);
     message.success(`已添加角色：${newRole.name}`);
+  };
+
+  // 重新智能选择角色
+  const reGenerateRoles = async () => {
+    if (!intentReady) {
+      message.warning('请先完成需求识别');
+      return;
+    }
+    setIsReGeneratingRoles(true);
+    const loadingMsg = message.loading('正在重新智能匹配角色组合...', 0);
+    try {
+      const generatedRoles = await generateRolesByIntentWithAI(intentCard, roleTemplates);
+      setRoles(generatedRoles);
+      message.success('已重新智能匹配角色组合');
+    } catch (error) {
+      console.error('角色重新匹配失败:', error);
+      message.error('角色重新匹配失败，请重试');
+    } finally {
+      loadingMsg();
+      setIsReGeneratingRoles(false);
+    }
+  };
+
+  // 从模板库添加角色
+  const addRoleFromTemplate = (templateId: number) => {
+    const template = roleTemplates.find(t => t.id === templateId);
+    if (!template) return;
+    // 检查是否已经添加
+    const existingRoleId = `role_${template.id}`;
+    if (roles.some(r => r.id === existingRoleId)) {
+      message.warning(`角色「${template.name}」已在列表中`);
+      return;
+    }
+    const newRole: RoleMember = {
+      id: existingRoleId,
+      name: template.name,
+      stance: template.stance as '建设' | '对抗' | '中立' | '评审',
+      desc: template.description || '',
+      selected: true,
+      soulConfig: template.soul_config,
+    };
+    setRoles((prev) => [...prev, newRole]);
+    message.success(`已添加角色：${template.name}`);
+    setTemplatePickerVisible(false);
   };
 
   const deleteRole = (roleId: string) => {
@@ -2213,8 +2263,8 @@ ${userText}
         <Layout style={{ background: '#f5f5f5', overflow: 'hidden' }}>
           <Content style={{ padding: 16, flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
             {step === 'roundtable' && (
-              <Row gutter={16}>
-                <Col xs={24} xl={14}>
+              <Row gutter={16} justify={isExpertMode ? 'start' : 'center'}>
+                <Col xs={24} xl={isExpertMode ? 14 : 16}>
                   <Card title="需求识别交互" style={{ borderRadius: 8 }}>
                     <div style={{ maxHeight: 'calc(100dvh - 64px - 140px)', overflowY: 'auto', paddingRight: 8 }}>
                       <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -2229,25 +2279,6 @@ ${userText}
                           onMaterialsAnalyzed={handleMaterialsAnalyzed}
                           maxFiles={10}
                         />
-
-                        {/* 场景模板快捷入口 */}
-                        {scenarioTemplates.length > 0 && (
-                          <div style={{ marginTop: 16 }}>
-                            <Text strong style={{ display: 'block', marginBottom: 8 }}>一键上桌（场景模板）</Text>
-                            <Space wrap>
-                              {scenarioTemplates.filter(t => t.is_active).map(template => (
-                                <Button 
-                                  key={template.id} 
-                                  onClick={() => selectScenarioTemplate(template.id)}
-                                  disabled={!initialDemand.trim() && uploadedMaterials.length === 0}
-                                  title={(!initialDemand.trim() && uploadedMaterials.length === 0) ? "请先输入需求或上传资料" : template.description}
-                                >
-                                  {template.name}
-                                </Button>
-                              ))}
-                            </Space>
-                          </div>
-                        )}
 
                         {uploadedMaterials.length > 0 && (
                           <MaterialIntentSynthesis
@@ -2265,35 +2296,60 @@ ${userText}
                             }}
                           />
                         )}
-                        <Space style={{ width: '100%', justifyContent: 'space-between', marginTop: 16 }}>
-                        <Space>
-                        <Button 
-                          onClick={() => {
-                            const sampleContent = `“小秘”：你的隐私优先、全感官个人 AI 管家
-核心理念：将碎片信息转化为有序智慧，打造属于你的“数字第二大脑”。
-• 零门槛全能录入：支持语音、截图、文档、即时消息等 8 种媒介，随手拍、随口说、随心存，彻底打破应用间的“信息孤岛”。
-• 隐私主权架构：坚持“本地优先”，所有 RAG 索引与数据库均存于本地，支持端侧轻量化运行。你的数据，只有你拥有。
-• 反焦虑缓冲机制：首创“收件箱缓冲区”，AI 解析的内容需经你确认才进入日程或知识库，拒绝任务堆积，维护生活的秩序感。
-• 情境感知助手：它懂你的节奏。平日里它是静默的守门人，在开会前或关键时刻，它会精准推送关联文档与任务汇总，化碎片为行动。`;
-                            setInitialDemand(sampleContent);
-                          }}
-                        >
-                          加载示例输入
-                        </Button>
-                        <Space>
-                          <Switch checked={isExpertMode} onChange={setIsExpertMode} />
-                          <Text>高级模式（自定义探针与角色配置）</Text>
+
+                        <Divider style={{ margin: '12px 0' }} />
+
+                        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                          <Button 
+                            type="primary" 
+                            size="large" 
+                            block 
+                            onClick={startIntentProbing}
+                            style={{ height: 48, fontSize: 16, borderRadius: 8 }}
+                          >
+                            {isExpertMode ? '开始深度洞察 (多轮问答)' : '✨ 智能分析需求并组建团队'}
+                          </Button>
+
+                          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                            <Button 
+                              type="link"
+                              onClick={() => {
+                                const sampleContent = `“小秘”：你的隐私优先、全感官个人 AI 管家\n核心理念：将碎片信息转化为有序智慧，打造属于你的“数字第二大脑”。\n• 零门槛全能录入：支持语音、截图、文档、即时消息等 8 种媒介，随手拍、随口说、随心存，彻底打破应用间的“信息孤岛”。\n• 隐私主权架构：坚持“本地优先”，所有 RAG 索引与数据库均存于本地，支持端侧轻量化运行。你的数据，只有你拥有。\n• 反焦虑缓冲机制：首创“收件箱缓冲区”，AI 解析的内容需经你确认才进入日程或知识库，拒绝任务堆积，维护生活的秩序感。\n• 情境感知助手：它懂你的节奏。平日里它是静默的守门人，在开会前或关键时刻，它会精准推送关联文档与任务汇总，化碎片为行动。`;
+                                setInitialDemand(sampleContent);
+                              }}
+                            >
+                              加载示例输入
+                            </Button>
+                            <Space>
+                              <Switch checked={isExpertMode} onChange={setIsExpertMode} />
+                              <Text>高级模式 (自定义探针、角色与结构化意图)</Text>
+                            </Space>
+                          </Space>
                         </Space>
-                        </Space>
-                      </Space>
+
+                        {/* 场景模板快捷入口 */}
+                        {scenarioTemplates.length > 0 && (
+                          <div style={{ marginTop: 16, padding: '16px', background: '#fafafa', borderRadius: 8 }}>
+                            <Text strong style={{ display: 'block', marginBottom: 12 }}>或使用场景模板一键上桌：</Text>
+                            <Space wrap>
+                              {scenarioTemplates.filter(t => t.is_active).map(template => (
+                                <Button 
+                                  key={template.id} 
+                                  onClick={() => selectScenarioTemplate(template.id)}
+                                  disabled={!initialDemand.trim() && uploadedMaterials.length === 0}
+                                  title={(!initialDemand.trim() && uploadedMaterials.length === 0) ? "请先输入需求或上传资料" : template.description}
+                                >
+                                  {template.name}
+                                </Button>
+                              ))}
+                            </Space>
+                          </div>
+                        )}
                       </Space>
                       {isExpertMode && (
                         <>
-                          <Divider style={{ margin: '8px 0' }} />
+                          <Divider style={{ margin: '16px 0' }} />
                           <Space style={{ marginBottom: 16 }}>
-                            <Button type="primary" onClick={startIntentProbing}>
-                              开始洞察 (高级)
-                            </Button>
                             <Button
                               onClick={() => {
                                 setProbeQuestions([]);
@@ -2312,7 +2368,7 @@ ${userText}
                                 form.resetFields();
                               }}
                             >
-                              重置
+                              重置分析状态
                             </Button>
                           </Space>
                           {probeTurns.length === 0 && <Empty description="输入需求后点击「开始洞察」，系统将提出澄清问题并生成需求卡片" />}
@@ -2381,92 +2437,96 @@ ${userText}
                 </Col>
                 {isExpertMode && (
                 <Col xs={24} xl={10}>
-                  <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                    <Card title="全局配置" style={{ borderRadius: 8 }}>
-                      <Space direction="vertical" style={{ width: '100%' }}>
-                        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                          <Text type="secondary">模型选择</Text>
-                          <Select
-                            style={{ width: 200 }}
-                            value={selectedModelId}
-                            onChange={setSelectedModelId}
-                            options={models.map((m) => ({ value: m.id, label: m.name }))}
-                            loading={loadingModels}
-                            placeholder="请选择大模型"
-                          />
-                        </Space>
-                        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                          <Text type="secondary">全局提示词 (System Prompt)</Text>
-                          <Button type="link" size="small" onClick={() => setSystemPrompt(promptTemplates.prompt_base || '')}>重置默认</Button>
-                        </Space>
-                        <Input.TextArea
-                          rows={4}
-                          value={systemPrompt}
-                          onChange={(e) => setSystemPrompt(e.target.value)}
-                          placeholder="可选：输入全局系统提示词，这将影响所有角色的行为"
-                        />
-                      </Space>
-                    </Card>
-                    <Card title="期望结果" style={{ borderRadius: 8 }}>
-                      <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                        <Input.TextArea
-                          rows={4}
-                          value={expectedResult}
-                          onChange={(e) => setExpectedResult(e.target.value)}
-                          placeholder="填写希望这次圆桌讨论最终达到的结果。可由AI基于意图洞察自动生成，再手动微调。"
-                        />
-                        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                          <Button
-                            loading={generatingExpectedResult}
-                            onClick={async () => {
-                              const values = await form.validateFields();
-                              setGeneratingExpectedResult(true);
-                              try {
-                                const generated = await generateExpectedResultByIntent(values as IntentCardState);
-                                setExpectedResult(generated);
-                                message.success('已生成期望结果');
-                              } finally {
-                                setGeneratingExpectedResult(false);
-                              }
-                            }}
-                          >
-                            AI生成期望结果
-                          </Button>
-                          <Space>
-                            <Text type="secondary">对话轮数上限</Text>
-                            <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => setMaxDialogueRounds(Number(v || 6))} />
+                  <Card title="高级配置与结构化需求" style={{ borderRadius: 8 }}>
+                    <div style={{ maxHeight: 'calc(100dvh - 64px - 140px)', overflowY: 'auto', paddingRight: 8 }}>
+                      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                        <Card type="inner" title="全局配置" style={{ borderRadius: 8 }}>
+                          <Space direction="vertical" style={{ width: '100%' }}>
+                            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                              <Text type="secondary">模型选择</Text>
+                              <Select
+                                style={{ width: 200 }}
+                                value={selectedModelId}
+                                onChange={setSelectedModelId}
+                                options={models.map((m) => ({ value: m.id, label: m.name }))}
+                                loading={loadingModels}
+                                placeholder="请选择大模型"
+                              />
+                            </Space>
+                            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                              <Text type="secondary">全局提示词 (System Prompt)</Text>
+                              <Button type="link" size="small" onClick={() => setSystemPrompt(promptTemplates.prompt_base || '')}>重置默认</Button>
+                            </Space>
+                            <Input.TextArea
+                              rows={4}
+                              value={systemPrompt}
+                              onChange={(e) => setSystemPrompt(e.target.value)}
+                              placeholder="可选：输入全局系统提示词，这将影响所有角色的行为"
+                            />
                           </Space>
-                        </Space>
+                        </Card>
+                        <Card type="inner" title="期望结果" style={{ borderRadius: 8 }}>
+                          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                            <Input.TextArea
+                              rows={4}
+                              value={expectedResult}
+                              onChange={(e) => setExpectedResult(e.target.value)}
+                              placeholder="填写希望这次圆桌讨论最终达到的结果。可由AI基于意图洞察自动生成，再手动微调。"
+                            />
+                            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                              <Button
+                                loading={generatingExpectedResult}
+                                onClick={async () => {
+                                  const values = await form.validateFields();
+                                  setGeneratingExpectedResult(true);
+                                  try {
+                                    const generated = await generateExpectedResultByIntent(values as IntentCardState);
+                                    setExpectedResult(generated);
+                                    message.success('已生成期望结果');
+                                  } finally {
+                                    setGeneratingExpectedResult(false);
+                                  }
+                                }}
+                              >
+                                AI生成期望结果
+                              </Button>
+                              <Space>
+                                <Text type="secondary">对话轮数上限</Text>
+                                <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => setMaxDialogueRounds(Number(v || 6))} />
+                              </Space>
+                            </Space>
+                          </Space>
+                        </Card>
+                        <Card type="inner" title="结构化需求卡片（可编辑）" style={{ borderRadius: 8 }}>
+                          <Form
+                            form={form}
+                            layout="vertical"
+                            initialValues={intentCard}
+                            onValuesChange={(_, values) => setIntentCard(values as IntentCardState)}
+                          >
+                            <Form.Item
+                              name="coreGoal"
+                              label="核心目标"
+                              rules={[{ required: true, message: '请填写核心目标' }]}
+                            >
+                              <Input placeholder="例：在两周内验证产品方向并形成可执行方案" />
+                            </Form.Item>
+                            <Form.Item name="constraints" label="限制条件">
+                              <Input placeholder="例：预算有限；人手少；需合规" />
+                            </Form.Item>
+                            <Form.Item name="painPoints" label="待解决痛点">
+                              <Input placeholder="例：方向跑偏；落地成本高；结果不可量化" />
+                            </Form.Item>
+                            <Space>
+                              <Button type="primary" onClick={confirmIntent} loading={generatingExpectedResult}>
+                                确认意图并进入角色矩阵
+                              </Button>
+                            </Space>
+                          </Form>
+                        </Card>
                       </Space>
-                    </Card>
-                    <Card title="结构化需求卡片（可编辑）" style={{ borderRadius: 8 }}>
-                      <Form
-                        form={form}
-                        layout="vertical"
-                        initialValues={intentCard}
-                        onValuesChange={(_, values) => setIntentCard(values as IntentCardState)}
-                      >
-                        <Form.Item
-                          name="coreGoal"
-                          label="核心目标"
-                          rules={[{ required: true, message: '请填写核心目标' }]}
-                        >
-                          <Input placeholder="例：在两周内验证产品方向并形成可执行方案" />
-                        </Form.Item>
-                        <Form.Item name="constraints" label="限制条件">
-                          <Input placeholder="例：预算有限；人手少；需合规" />
-                        </Form.Item>
-                        <Form.Item name="painPoints" label="待解决痛点">
-                          <Input placeholder="例：方向跑偏；落地成本高；结果不可量化" />
-                        </Form.Item>
-                        <Space>
-                          <Button type="primary" onClick={confirmIntent} loading={generatingExpectedResult}>
-                            确认意图并进入角色矩阵
-                          </Button>
-                        </Space>
-                      </Form>
-                    </Card>
-                  </Space>
+                    </div>
+                  </Card>
                 </Col>
                 )}
               </Row>
@@ -2486,8 +2546,16 @@ ${userText}
                           返回
                         </Button>
                         <span>角色矩阵（请确认参与圆桌的角色）</span>
+                        <Button 
+                          size="small" 
+                          icon={<RedoOutlined />}
+                          loading={isReGeneratingRoles}
+                          onClick={reGenerateRoles}
+                        >
+                          重新智能选择
+                        </Button>
                       </Space>
-                    } 
+                    }
                     style={{ borderRadius: 8 }}
                   >
                     {!intentReady && <Empty description="请先完成需求识别" />}
@@ -2574,16 +2642,12 @@ ${userText}
                         <Divider />
                         <Space direction="vertical" size={8} style={{ width: '100%' }}>
                           <Text strong>角色管理</Text>
-                          <Space>
-                            <Input
-                              placeholder="新角色名称"
-                              value={newRoleName}
-                              onChange={(e) => setNewRoleName(e.target.value)}
-                              style={{ width: 200 }}
-                              onPressEnter={addCustomRole}
-                            />
-                            <Button onClick={addCustomRole} type="primary">
-                              添加角色
+                          <Space wrap>
+                            <Button icon={<PlusOutlined />} onClick={() => { setAddRoleForm({ name: '', stance: '建设', desc: '' }); setNewRoleName(''); setAddRoleModalVisible(true); }} type="primary">
+                              添加自定义角色
+                            </Button>
+                            <Button icon={<AppstoreAddOutlined />} onClick={() => setTemplatePickerVisible(true)}>
+                              从模板库添加
                             </Button>
                           </Space>
                         </Space>
@@ -2683,6 +2747,122 @@ ${userText}
               />
             </Modal>
 
+            {/* 添加自定义角色 Modal */}
+            <Modal
+              title="添加自定义角色"
+              open={addRoleModalVisible}
+              onCancel={() => setAddRoleModalVisible(false)}
+              onOk={addCustomRole}
+              okText="添加"
+              cancelText="取消"
+              destroyOnClose
+            >
+              <Space direction="vertical" size={14} style={{ width: '100%', marginTop: 8 }}>
+                <div>
+                  <Text strong style={{ display: 'block', marginBottom: 4 }}>角色名称 <span style={{ color: '#ff4d4f' }}>*</span></Text>
+                  <Input
+                    placeholder="例如：数据安全专家、市场分析师"
+                    value={newRoleName}
+                    onChange={(e) => setNewRoleName(e.target.value)}
+                    onPressEnter={addCustomRole}
+                    maxLength={20}
+                    showCount
+                  />
+                </div>
+                <div>
+                  <Text strong style={{ display: 'block', marginBottom: 4 }}>角色立场</Text>
+                  <Select
+                    value={addRoleForm.stance}
+                    onChange={(val) => setAddRoleForm((prev) => ({ ...prev, stance: val }))}
+                    style={{ width: '100%' }}
+                    options={[
+                      { value: '建设', label: '建设 - 积极推动、贡献方案' },
+                      { value: '对抗', label: '对抗 - 质疑挑战、压力测试' },
+                      { value: '中立', label: '中立 - 客观分析、多面评估' },
+                      { value: '评审', label: '评审 - 严格审核、质量把关' },
+                    ]}
+                  />
+                </div>
+                <div>
+                  <Text strong style={{ display: 'block', marginBottom: 4 }}>角色描述</Text>
+                  <Input.TextArea
+                    rows={3}
+                    placeholder="简要描述该角色的职责和视角，帮助圆桌讨论时更好地理解角色定位"
+                    value={addRoleForm.desc}
+                    onChange={(e) => setAddRoleForm((prev) => ({ ...prev, desc: e.target.value }))}
+                    maxLength={200}
+                    showCount
+                  />
+                </div>
+              </Space>
+            </Modal>
+
+            {/* 从模板库添加角色 Modal */}
+            <Modal
+              title="从模板库添加角色"
+              open={templatePickerVisible}
+              onCancel={() => setTemplatePickerVisible(false)}
+              footer={null}
+              width={700}
+              destroyOnClose
+            >
+              <Input
+                placeholder="搜索角色名称或描述..."
+                style={{ width: '100%', marginBottom: 12 }}
+                allowClear
+              />
+              <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+                {roleTemplates.filter(t => t.is_active !== false).length === 0 ? (
+                  <Empty description="暂无可用角色模板" />
+                ) : (
+                  <Row gutter={[8, 8]}>
+                    {roleTemplates
+                      .filter(t => t.is_active !== false)
+                      .filter(t => !roles.some(r => r.id === `role_${t.id}`))
+                      .map((template) => (
+                        <Col xs={24} md={12} key={template.id}>
+                          <Card
+                            hoverable
+                            size="small"
+                            style={{ borderRadius: 6 }}
+                            onClick={() => addRoleFromTemplate(template.id)}
+                          >
+                            <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                                <Text strong>{template.name}</Text>
+                                <Tag color={
+                                  template.stance === '建设' ? 'blue' :
+                                  template.stance === '对抗' ? 'red' :
+                                  template.stance === '评审' ? 'gold' : 'default'
+                                }>
+                                  {template.stance}
+                                </Tag>
+                              </Space>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                {template.description || '暂无描述'}
+                              </Text>
+                              {(template.category || template.skill_tags?.length) && (
+                                <Space wrap size={2}>
+                                  {template.category && <Tag style={{ fontSize: 10 }}>{template.category}</Tag>}
+                                  {(template.skill_tags || []).slice(0, 2).map(tag => (
+                                    <Tag key={tag} style={{ fontSize: 10 }} color="processing">{tag}</Tag>
+                                  ))}
+                                </Space>
+                              )}
+                            </Space>
+                          </Card>
+                        </Col>
+                      ))
+                    }
+                  </Row>
+                )}
+                {roleTemplates.filter(t => t.is_active !== false).length > 0 &&
+                  roleTemplates.filter(t => t.is_active !== false).filter(t => !roles.some(r => r.id === `role_${t.id}`)).length === 0 && (
+                  <Empty description="所有可用模板角色已添加" />
+                )}
+              </div>
+            </Modal>
+
             <Modal
               title="输入新点子"
               open={newIdeaModalOpen}
@@ -2712,34 +2892,7 @@ ${userText}
             </Modal>
 
             {step === 'roundtable_view' && (
-              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                {/* 顶部：目标达成度进度条 */}
-                <Card size="small" style={{ marginBottom: 16, borderRadius: 8 }}>
-                  <Row align="middle" gutter={16}>
-                    <Col>
-                      <Text strong>目标达成度：</Text>
-                    </Col>
-                    <Col flex="auto">
-                      <Tooltip title={judgeReason || '等待裁判评估中...'}>
-                        <Progress 
-                          percent={judgeScore} 
-                          status={judgeScore >= 90 ? 'success' : 'active'} 
-                          strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
-                        />
-                      </Tooltip>
-                    </Col>
-                    <Col>
-                      <Space direction="vertical" size={0}>
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          {judgeReason || '等待裁判评估中...'}
-                        </Text>
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          共识 {judgeState.consensusCount} · 已解痛点 {judgeState.resolvedPainPoints} · 后台任务 {runtimePendingTasks}
-                        </Text>
-                      </Space>
-                    </Col>
-                  </Row>
-                </Card>
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'}}>
 
                 <Row gutter={16} style={{ flex: 1, minHeight: 0, overflow: 'visible' }}>
                   {/* 左侧：对话流 */}
@@ -2806,6 +2959,33 @@ ${userText}
 
                 {/* 右侧：书记员看板（占30%） */}
                 <Col xs={24} xl={7} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
+                  {/* 顶部：目标达成度进度条 */}
+                  <Card size="small" style={{ borderRadius: 8 }}>
+                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                      <Row align="middle" justify="space-between">
+                        <Col>
+                          <Text strong>目标达成度</Text>
+                        </Col>
+                        <Col>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            共识 {judgeState.consensusCount} · 已解痛点 {judgeState.resolvedPainPoints} · 任务 {runtimePendingTasks}
+                          </Text>
+                        </Col>
+                      </Row>
+                      <Tooltip title={judgeReason || '等待裁判评估中...'}>
+                        <Progress 
+                          percent={judgeScore} 
+                          status={judgeScore >= 90 ? 'success' : 'active'} 
+                          strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+                          size="small"
+                        />
+                      </Tooltip>
+                      <Text type="secondary" style={{ fontSize: 12, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={judgeReason || '等待裁判评估中...'}>
+                        {judgeReason || '等待裁判评估中...'}
+                      </Text>
+                    </Space>
+                  </Card>
+
                   {/* 书记员看板 — 始终展开，置顶 */}
                   <Card
                     title={
@@ -2893,7 +3073,7 @@ ${userText}
           </Content>
 
           {step !== 'canvas_view' && (
-            <Footer style={{ background: '#ffffff', borderTop: '1px solid #f0f0f0' }}>
+            <Footer style={{ background: '#ffffff', borderTop: '1px solid #f0f0f0', marginTop: 5 }}>
               {/* 圆桌空间显示状态标签 */}
               {step !== 'roundtable' && (
               <Row justify="space-between" align="middle">

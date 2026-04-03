@@ -21,6 +21,7 @@ try:
     from backend.app.models.llm import LLMConfig
     from backend.app.models.workspace import Workspace
     from backend.app.models.runtime import RuntimeTask, RuntimeEvent
+    from backend.app.models.search_engine import SearchEngineConfig
 except ImportError:
     from app.core.config import settings
     from app.core.database import engine, Base
@@ -39,6 +40,7 @@ except ImportError:
     from app.models.llm import LLMConfig
     from app.models.workspace import Workspace
     from app.models.runtime import RuntimeTask, RuntimeEvent
+    from app.models.search_engine import SearchEngineConfig
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

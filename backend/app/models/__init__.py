@@ -10,6 +10,7 @@ try:
     from backend.app.models.user import User, Role, UserConfig
     from backend.app.models.material import Material
     from backend.app.models.scenario_template import ScenarioTemplate
+    from backend.app.models.search_engine import SearchEngineConfig
 except ImportError:
     from app.models.prompt import SysPrompt
     from app.models.bot import Bot
@@ -22,3 +23,4 @@ except ImportError:
     from app.models.user import User, Role, UserConfig
     from app.models.material import Material
     from app.models.scenario_template import ScenarioTemplate
+    from app.models.search_engine import SearchEngineConfig

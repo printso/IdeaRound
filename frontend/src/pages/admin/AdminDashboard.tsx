@@ -19,13 +19,14 @@ import RoundtableConfigManagement from './RoundtableConfigManagement';
 import UserManagement from './UserManagement';
 import ScenarioTemplateManagement from './ScenarioTemplateManagement';
 import RuntimeMonitor from './RuntimeMonitor';
+import SearchEngineManagement from './SearchEngineManagement';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
 const { Sider, Content } = Layout;
 const { Title } = Typography;
 
-type MenuKey = 'models' | 'scenario' | 'prompts' | 'styles' | 'roles' | 'roundtable' | 'users' | 'runtime';
+type MenuKey = 'models' | 'scenario' | 'prompts' | 'styles' | 'roles' | 'roundtable' | 'users' | 'runtime' | 'search_engines';
 
 const AdminDashboard: React.FC = () => {
   const [selectedMenu, setSelectedMenu] = useState<MenuKey>('models');
@@ -44,6 +45,11 @@ const AdminDashboard: React.FC = () => {
       key: 'models',
       icon: <ApiOutlined />,
       label: '模型管理',
+    },
+    {
+      key: 'search_engines',
+      icon: <ApiOutlined />,
+      label: '搜索引擎',
     },
     {
       key: 'scenario',
@@ -86,6 +92,8 @@ const AdminDashboard: React.FC = () => {
     switch (selectedMenu) {
       case 'models':
         return <ModelManagement />;
+      case 'search_engines':
+        return <SearchEngineManagement />;
       case 'scenario':
         return <ScenarioTemplateManagement />;
       case 'prompts':
