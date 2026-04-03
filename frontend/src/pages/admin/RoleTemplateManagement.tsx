@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Button,
   Card,
@@ -10,19 +10,16 @@ import {
   Switch,
   Table,
   Tag,
+  List,
   message,
-  Popconfirm,
   Dropdown,
   Typography,
   Row,
   Col,
   Statistic,
-  Progress,
   Upload,
-  Tooltip,
   Descriptions,
   Tabs,
-  InputNumber,
   Rate,
   Badge,
   Alert,
@@ -35,20 +32,14 @@ import {
   CopyOutlined,
   HistoryOutlined,
   SearchOutlined,
-  FilterOutlined,
   CloudUploadOutlined,
   CloudDownloadOutlined,
-  BarChartOutlined,
   EyeOutlined,
   ReloadOutlined,
   MoreOutlined,
   CheckCircleOutlined,
   StopOutlined,
-  StarOutlined,
   TagsOutlined,
-  UserOutlined,
-  FileTextOutlined,
-  SettingOutlined,
   RiseOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
@@ -130,7 +121,6 @@ const RoleTemplateManagement: React.FC = () => {
     total: 0,
   });
   const [stats, setStats] = useState<roleTemplateApi.UsageStats | null>(null);
-  const [categories, setCategories] = useState<string[]>([]);
 
   // 筛选状态
   const [searchText, setSearchText] = useState('');
@@ -184,9 +174,6 @@ const RoleTemplateManagement: React.FC = () => {
       });
       setTemplates(response.templates);
       setPagination(prev => ({ ...prev, total: response.total }));
-      if (response.stats?.category_stats) {
-        setCategories(Object.keys(response.stats.category_stats));
-      }
     } catch (error: any) {
       message.error(error?.message || '加载角色模板失败');
     } finally {
@@ -229,8 +216,8 @@ const RoleTemplateManagement: React.FC = () => {
   };
 
   // 表格变化
-  const handleTableChange = (pag: TablePaginationConfig, filters: any, sorter: any) => {
-    if (pag.current) setPagination(prev => ({ ...prev, current: pag.current }));
+  const handleTableChange = (pag: TablePaginationConfig, _filters: unknown, sorter: any) => {
+    if (pag.current) setPagination(prev => ({ ...prev, current: pag.current ?? prev.current }));
     if (pag.pageSize) setPagination(prev => ({ ...prev, pageSize: pag.pageSize as number }));
     if (sorter.field) {
       setSortField(sorter.field as string);
@@ -509,7 +496,7 @@ const RoleTemplateManagement: React.FC = () => {
       title: '状态',
       dataIndex: 'is_active',
       width: 80,
-      render: (active, record) => (
+      render: (active) => (
         <Badge
           status={active ? 'success' : 'default'}
           text={active ? '启用' : '停用'}
@@ -561,6 +548,7 @@ const RoleTemplateManagement: React.FC = () => {
                   label: '删除',
                   danger: true,
                   disabled: record.is_default,
+                  onClick: () => handleDelete(record.id),
                 },
               ].filter(item => !(record.is_default && item.key === 'delete')) as MenuProps['items'],
             }}
@@ -853,7 +841,7 @@ const RoleTemplateManagement: React.FC = () => {
         <List
           loading={versionsLoading}
           dataSource={versions}
-          renderItem={(version) => (
+          renderItem={(version: roleTemplateApi.RoleTemplateVersion) => (
             <List.Item
               key={version.id}
               actions={[
@@ -1043,7 +1031,7 @@ const RoleTemplateManagement: React.FC = () => {
             onClick={() => {
               const file = importFileList[0]?.originFileObj;
               if (file) {
-                handleImport({ file } as any);
+                handleImport?.({ file } as any, { defaultRequest: () => undefined } as any);
               }
             }}
           >
@@ -1054,19 +1042,5 @@ const RoleTemplateManagement: React.FC = () => {
     </div>
   );
 };
-
-// 导入 List 组件
-const List = ({ dataSource, renderItem, loading, children }: any) => (
-  <div style={{ maxHeight: 400, overflow: 'auto' }}>
-    {loading ? (
-      <div style={{ textAlign: 'center', padding: 24 }}>加载中...</div>
-    ) : dataSource?.length === 0 ? (
-      <div style={{ textAlign: 'center', padding: 24, color: '#999' }}>暂无数据</div>
-    ) : (
-      dataSource?.map((item: any, index: number) => renderItem(item, index))
-    )}
-    {children}
-  </div>
-);
 
 export default RoleTemplateManagement;

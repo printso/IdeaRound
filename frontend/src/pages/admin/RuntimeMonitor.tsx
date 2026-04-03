@@ -78,7 +78,7 @@ const RuntimeMonitor: React.FC = () => {
         </Col>
         <Col xs={24} md={8} xl={6}>
           <Card loading={loading}>
-            <Statistic title="导演干预次数" value={metrics?.director_events || 0} />
+            <Statistic title="主持人干预次数" value={metrics?.host_events || 0} />
           </Card>
         </Col>
       </Row>

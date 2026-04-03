@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +22,8 @@ try:
         RuntimeEventTrackRequest,
         RuntimeMetricsSummary,
         RuntimeRoomSnapshot,
+        RuntimeRoundtableRunRequest,
+        RuntimeTaskCancelResponse,
         RuntimeTaskCreateRequest,
         RuntimeTaskResponse,
     )
@@ -32,11 +36,20 @@ except ImportError:
         RuntimeEventTrackRequest,
         RuntimeMetricsSummary,
         RuntimeRoomSnapshot,
+        RuntimeRoundtableRunRequest,
+        RuntimeTaskCancelResponse,
         RuntimeTaskCreateRequest,
         RuntimeTaskResponse,
     )
 
 router = APIRouter()
+
+TERMINAL_STATUSES = {"completed", "failed", "canceled"}
+TASK_STREAM_QUEUES: Dict[str, List[asyncio.Queue[Dict[str, Any]]]] = {}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _as_json_dict(content: str, fallback: Dict[str, Any]) -> Dict[str, Any]:
@@ -47,6 +60,128 @@ def _as_json_dict(content: str, fallback: Dict[str, Any]) -> Dict[str, Any]:
     except json.JSONDecodeError:
         pass
     return fallback
+
+
+def _serialize_runtime_task(task: RuntimeTask) -> Dict[str, Any]:
+    return {
+        "task_id": task.task_id,
+        "task_type": task.task_type,
+        "room_id": task.room_id,
+        "status": task.status,
+        "model_id": task.model_id,
+        "result_payload": task.result_payload,
+        "error_message": task.error_message,
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "finished_at": task.finished_at.isoformat() if task.finished_at else None,
+        "created_at": task.created_at.isoformat() if task.created_at else _utcnow().isoformat(),
+    }
+
+
+def _subscribe_task_stream(task_id: str) -> asyncio.Queue[Dict[str, Any]]:
+    queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+    TASK_STREAM_QUEUES.setdefault(task_id, []).append(queue)
+    return queue
+
+
+def _unsubscribe_task_stream(task_id: str, queue: asyncio.Queue[Dict[str, Any]]) -> None:
+    queues = TASK_STREAM_QUEUES.get(task_id)
+    if not queues:
+        return
+    TASK_STREAM_QUEUES[task_id] = [item for item in queues if item is not queue]
+    if not TASK_STREAM_QUEUES[task_id]:
+        TASK_STREAM_QUEUES.pop(task_id, None)
+
+
+async def _publish_task_stream_event(
+    task_id: str,
+    event_type: str,
+    task_payload: Dict[str, Any],
+) -> None:
+    queues = TASK_STREAM_QUEUES.get(task_id, [])
+    if not queues:
+        return
+    message = {"event": event_type, "task": task_payload}
+    stale_queues: List[asyncio.Queue[Dict[str, Any]]] = []
+    for queue in queues:
+        try:
+            queue.put_nowait(message)
+        except asyncio.QueueFull:
+            stale_queues.append(queue)
+    if stale_queues:
+        for queue in stale_queues:
+            _unsubscribe_task_stream(task_id, queue)
+
+
+def _format_sse_message(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _safe_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _compress_text(value: str, max_chars: int = 220) -> str:
+    clean = " ".join(_safe_text(value).split())
+    if len(clean) <= max_chars:
+        return clean
+    return clean[: max_chars - 1] + "…"
+
+
+def _extract_summary_points(content: str, max_items: int = 3) -> List[str]:
+    lines = [
+        line.strip("-*0123456789. ")
+        for line in _safe_text(content).splitlines()
+        if line.strip()
+    ]
+    compact = [_compress_text(line, 80) for line in lines if len(line) >= 4]
+    if compact:
+        return compact[:max_items]
+    if not content:
+        return []
+    return [_compress_text(content, 80)]
+
+
+def _build_recent_transcript(
+    messages: List[Dict[str, Any]],
+    *,
+    memory_summary: str = "",
+    max_messages: int = 8,
+    max_chars: int = 2800,
+) -> str:
+    recent_lines: List[str] = []
+    if memory_summary:
+        recent_lines.append(f"【历史摘要】{memory_summary}")
+    for item in messages[-max_messages:]:
+        speaker = item.get("speaker_name") or item.get("speakerName") or "未知角色"
+        content = item.get("content") or ""
+        recent_lines.append(f"{speaker}：{_compress_text(content, 260)}")
+    transcript = "\n".join(recent_lines).strip()
+    return transcript[-max_chars:] if len(transcript) > max_chars else transcript
+
+
+def _merge_memory_summary(memory_summary: str, messages: List[Dict[str, Any]], *, max_chars: int = 1200) -> str:
+    snippets: List[str] = []
+    if memory_summary:
+        snippets.append(memory_summary)
+    for item in messages[-6:]:
+        speaker = item.get("speaker_name") or item.get("speakerName") or "未知角色"
+        points = _extract_summary_points(item.get("content") or "", max_items=2)
+        if points:
+            snippets.append(f"{speaker}：" + "；".join(points))
+    merged = " | ".join(snippets)
+    return merged[-max_chars:] if len(merged) > max_chars else merged
+
+
+def _normalize_message(message: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": message.get("id") or uuid.uuid4().hex,
+        "speaker_id": message.get("speaker_id") or message.get("speakerId") or "",
+        "speaker_name": message.get("speaker_name") or message.get("speakerName") or "",
+        "speaker_type": message.get("speaker_type") or message.get("speakerType") or "agent",
+        "content": message.get("content") or "",
+        "streaming": bool(message.get("streaming", False)),
+        "created_at": message.get("created_at") or message.get("createdAt") or _utcnow().isoformat(),
+    }
 
 
 def _build_progress_prompt(payload: Dict[str, Any]) -> str:
@@ -103,7 +238,7 @@ def _build_board_prompt(payload: Dict[str, Any]) -> str:
 }}"""
 
 
-async def _call_llm_json(model_id: int, prompt: str, system_prompt: str) -> Dict[str, Any]:
+async def _load_llm_settings(model_id: int) -> Dict[str, Any]:
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(LLMConfig).where(LLMConfig.id == model_id, LLMConfig.is_active.is_(True))
@@ -113,20 +248,189 @@ async def _call_llm_json(model_id: int, prompt: str, system_prompt: str) -> Dict
             raise RuntimeError("LLM Config not found or inactive")
         if not llm_config.api_key:
             raise RuntimeError("API key is required for this model")
+        return {
+            "api_key": llm_config.api_key,
+            "api_base": llm_config.api_base,
+            "model_name": llm_config.model_name,
+            "temperature": llm_config.temperature,
+        }
 
-        client = AsyncOpenAI(api_key=llm_config.api_key, base_url=llm_config.api_base or None)
-        response = await client.chat.completions.create(
-            model=llm_config.model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            stream=False,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content or "{}"
-        return _as_json_dict(content, {})
+
+async def _call_llm_text_with_settings(
+    llm_settings: Dict[str, Any],
+    prompt: str,
+    system_prompt: str,
+    *,
+    temperature: Optional[float] = None,
+) -> str:
+    client = AsyncOpenAI(
+        api_key=llm_settings["api_key"],
+        base_url=llm_settings.get("api_base") or None,
+    )
+    response = await client.chat.completions.create(
+        model=llm_settings["model_name"],
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=llm_settings.get("temperature", 0.7) if temperature is None else temperature,
+        stream=False,
+    )
+    return response.choices[0].message.content or ""
+
+
+async def _call_llm_json(model_id: int, prompt: str, system_prompt: str) -> Dict[str, Any]:
+    llm_settings = await _load_llm_settings(model_id)
+    return await _call_llm_json_with_settings(llm_settings, prompt, system_prompt)
+
+
+async def _call_llm_json_with_settings(
+    llm_settings: Dict[str, Any],
+    prompt: str,
+    system_prompt: str,
+) -> Dict[str, Any]:
+    client = AsyncOpenAI(
+        api_key=llm_settings["api_key"],
+        base_url=llm_settings.get("api_base") or None,
+    )
+    response = await client.chat.completions.create(
+        model=llm_settings["model_name"],
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.1,
+        stream=False,
+        response_format={"type": "json_object"},
+    )
+    content = response.choices[0].message.content or "{}"
+    return _as_json_dict(content, {})
+
+
+def _build_roundtable_system_prompt(
+    payload: Dict[str, Any],
+    role: Dict[str, Any],
+    stage: str,
+) -> str:
+    prompt_templates = payload.get("prompt_templates") or {}
+    intent_card = payload.get("intent_card") or {}
+    core_goal = intent_card.get("coreGoal") or intent_card.get("core_goal") or "未提供"
+    constraints = intent_card.get("constraints") or ""
+    pain_points = intent_card.get("painPoints") or intent_card.get("pain_points") or ""
+    expected_result = payload.get("expected_result") or ""
+    role_name = role.get("name") or "角色"
+    role_stance = role.get("stance") or "中立"
+
+    base = [
+        prompt_templates.get("prompt_base")
+        or "你是圆桌创意中的一个角色，请保持高信噪比，避免客套话、重复和盲目附和。",
+        f"你的身份：{role_name}（立场：{role_stance}）。",
+        f"用户意图锚点：{core_goal}。",
+        f"限制条件：{constraints or '未提供'}。",
+        f"待解决痛点：{pain_points or '未提供'}。",
+        f"期望结果：{expected_result or '未提供'}。",
+        "请优先指出有价值的新信息、风险和分歧，不要复述别人已经说过的话。",
+        "如果你同意某个观点，必须补充证据、边界或执行条件，禁止空泛附和。",
+    ]
+    soul_config = role.get("soul_config") or role.get("soulConfig")
+    if soul_config:
+        base.extend(["", soul_config])
+
+    is_audit = role.get("id") == "audit" or "审计官" in role_name
+    if stage == "brief":
+        if is_audit and prompt_templates.get("prompt_audit_brief"):
+            base.extend(["", prompt_templates["prompt_audit_brief"]])
+        elif prompt_templates.get("prompt_brief_stage"):
+            base.extend(["", prompt_templates["prompt_brief_stage"]])
+        else:
+            base.extend(
+                [
+                    "",
+                    "当前处于「脑暴发散阶段」。",
+                    "只输出 3-5 条核心判断或建议，避免总结成大而全方案。",
+                    "优先暴露分歧、漏洞、前提假设和增量机会。",
+                    "使用 Markdown 无序列表。",
+                ]
+            )
+    else:
+        if is_audit and prompt_templates.get("prompt_audit_final"):
+            base.extend(["", prompt_templates["prompt_audit_final"]])
+        elif prompt_templates.get("prompt_final_stage"):
+            base.extend(["", prompt_templates["prompt_final_stage"]])
+        else:
+            base.extend(
+                [
+                    "",
+                    "当前处于「收敛定稿阶段」。",
+                    "请输出可执行方案，至少覆盖目标拆解、关键路径、风险对策、验证指标和下一步行动。",
+                    "保留必要分歧，但必须给出建议结论。",
+                    "使用 Markdown 输出。",
+                ]
+            )
+
+    system_prompt = _safe_text(payload.get("system_prompt"))
+    if system_prompt:
+        base.extend(["", f"补充系统提示词：{system_prompt}"])
+    return "\n".join(base)
+
+
+def _build_roundtable_user_prompt(
+    payload: Dict[str, Any],
+    role: Dict[str, Any],
+    stage: str,
+    user_message: str,
+    transcript: str,
+    memory_summary: str,
+) -> str:
+    role_name = role.get("name") or "角色"
+    role_stance = role.get("stance") or "中立"
+    core_goal = (
+        (payload.get("intent_card") or {}).get("coreGoal")
+        or (payload.get("intent_card") or {}).get("core_goal")
+        or "未指定目标"
+    )
+    return f"""【讨论阶段】{stage}
+【核心目标】{core_goal}
+【角色身份】{role_name}（{role_stance}）
+【滚动摘要】
+{memory_summary or '暂无摘要'}
+
+【最近对话】
+{transcript or '暂无历史对话'}
+
+【本轮输入】
+{user_message}
+
+请以你的角色身份直接回应：
+1. 必须围绕核心目标，不要跑题。
+2. 必须提供新的判断、补充或反驳，不能机械重复已有内容。
+3. 如果发现前提不足，请明确指出需要验证什么。
+4. 输出内容保持精炼，避免客套。"""
+
+
+def _build_canvas_items(board_state: Dict[str, Any], stage: str) -> Dict[str, List[str]]:
+    consensus = board_state.get("consensus")
+    disputes = board_state.get("disputes")
+    consensus_items = [str(item).strip() for item in consensus if str(item).strip()] if isinstance(consensus, list) else []
+    dispute_items: List[str] = []
+    if isinstance(disputes, list):
+        for item in disputes:
+            if isinstance(item, dict):
+                topic = _safe_text(item.get("topic"))
+                if topic:
+                    dispute_items.append(topic)
+            else:
+                text = _safe_text(item)
+                if text:
+                    dispute_items.append(text)
+    if not consensus_items and stage == "final":
+        consensus_items.append("已输出总结性方案")
+    if not dispute_items and stage == "brief":
+        dispute_items.append("仍需继续验证关键假设")
+    return {
+        "canvas_consensus": consensus_items[:6],
+        "canvas_disputes": dispute_items[:6],
+    }
 
 
 async def _record_event(
@@ -152,6 +456,363 @@ async def _record_event(
         await db.commit()
 
 
+async def _set_task_state(
+    task_id: str,
+    *,
+    status: Optional[str] = None,
+    result_payload: Optional[Dict[str, Any]] = None,
+    error_message: Optional[str] = None,
+    started: bool = False,
+    finished: bool = False,
+) -> Optional[RuntimeTask]:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(RuntimeTask).where(RuntimeTask.task_id == task_id))
+        task = result.scalars().first()
+        if not task:
+            return None
+        if status is not None:
+            task.status = status
+        if result_payload is not None:
+            task.result_payload = result_payload
+        if error_message is not None:
+            task.error_message = error_message
+        if started:
+            task.started_at = _utcnow()
+        if finished:
+            task.finished_at = _utcnow()
+        await db.commit()
+        await db.refresh(task)
+        await _publish_task_stream_event(task.task_id, "task.update", _serialize_runtime_task(task))
+        return task
+
+
+async def _get_task_payload(task_id: str) -> Optional[Dict[str, Any]]:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(RuntimeTask).where(RuntimeTask.task_id == task_id))
+        task = result.scalars().first()
+        if not task:
+            return None
+        return task.request_payload or {}
+
+
+async def _is_cancel_requested(task_id: str) -> bool:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(RuntimeTask.status).where(RuntimeTask.task_id == task_id))
+        status = result.scalar_one_or_none()
+        return status in {"cancel_requested", "canceled"}
+
+
+async def _evaluate_roundtable(
+    llm_settings: Dict[str, Any],
+    payload: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+    current_round: int,
+    memory_summary: str,
+) -> Dict[str, Any]:
+    transcript = _build_recent_transcript(messages, memory_summary=memory_summary, max_messages=10, max_chars=3600)
+    prompt_payload = {
+        "expected_result": payload.get("expected_result") or "",
+        "transcript": transcript,
+        "current_round": current_round,
+        "intent_card": payload.get("intent_card") or {},
+    }
+
+    async def get_progress() -> Dict[str, Any]:
+        try:
+            return await _call_llm_json_with_settings(
+                llm_settings,
+                _build_progress_prompt(prompt_payload),
+                "你是一个公正严谨的裁判大模型，只输出 JSON。",
+            )
+        except Exception as exc:
+            return {
+                "score": 0,
+                "reason": f"裁判评估失败：{exc}",
+                "reached": False,
+                "consensusCount": 0,
+                "resolvedPainPoints": 0,
+                "nextFocus": "继续围绕核心目标补足证据和执行路径",
+            }
+
+    async def get_board() -> Dict[str, Any]:
+        try:
+            return await _call_llm_json_with_settings(
+                llm_settings,
+                _build_board_prompt(prompt_payload),
+                "你是一个高信噪比的会议书记员，只输出 JSON。",
+            )
+        except Exception as exc:
+            return {
+                "summary": f"共识板生成失败：{exc}",
+                "consensus": [],
+                "disputes": [],
+                "nextQuestions": ["请继续围绕核心目标补充高价值观点"],
+            }
+
+    judge_state, board_state = await asyncio.gather(get_progress(), get_board())
+    return {"judge_state": judge_state, "consensus_board": board_state}
+
+
+async def _generate_role_reply(
+    llm_settings: Dict[str, Any],
+    payload: Dict[str, Any],
+    role: Dict[str, Any],
+    stage: str,
+    user_message: str,
+    transcript: str,
+    memory_summary: str,
+) -> Dict[str, Any]:
+    try:
+        content = await _call_llm_text_with_settings(
+            llm_settings,
+            _build_roundtable_user_prompt(payload, role, stage, user_message, transcript, memory_summary),
+            _build_roundtable_system_prompt(payload, role, stage),
+        )
+    except Exception as exc:
+        content = f"> 生成失败：{exc}"
+
+    return {
+        "id": f"m_{role.get('id', 'agent')}_{uuid.uuid4().hex[:10]}",
+        "speaker_id": role.get("id") or "",
+        "speaker_name": role.get("name") or "角色",
+        "speaker_type": "agent",
+        "content": content.strip(),
+        "streaming": False,
+        "created_at": _utcnow().isoformat(),
+    }
+
+
+async def _process_roundtable_task(task_id: str) -> None:
+    payload = await _get_task_payload(task_id)
+    if not payload:
+        return
+
+    start_time = time.perf_counter()
+    room_id = payload.get("room_id")
+    try:
+        llm_settings = await _load_llm_settings(payload["model_id"])
+        await _set_task_state(task_id, status="running", started=True)
+
+        roles = [role for role in payload.get("roles", []) if role.get("selected")]
+        if not roles:
+            raise RuntimeError("No selected roles")
+
+        current_messages = [_normalize_message(message) for message in payload.get("prior_messages", [])]
+        user_message_id = payload.get("user_message_id") or f"m_user_{uuid.uuid4().hex[:10]}"
+        user_message = _safe_text(payload.get("user_message"))
+        if not user_message:
+            raise RuntimeError("User message is required")
+
+        user_message_payload = {
+            "id": user_message_id,
+            "speaker_id": "user",
+            "speaker_name": "我" if payload.get("trigger") != "host" else "主持人",
+            "speaker_type": "user",
+            "content": user_message,
+            "streaming": False,
+            "created_at": _utcnow().isoformat(),
+        }
+        if not any(message.get("id") == user_message_id for message in current_messages):
+            current_messages.append(user_message_payload)
+
+        current_stage = payload.get("roundtable_stage") or "brief"
+        auto_continue = bool(payload.get("auto_continue", True))
+        auto_brainstorm = bool(payload.get("auto_brainstorm", True))
+        max_dialogue_rounds = max(int(payload.get("max_dialogue_rounds") or 1), 1)
+        current_round = int(payload.get("auto_round_count") or 0)
+        memory_summary = _safe_text(payload.get("memory_summary"))
+
+        base_result_payload: Dict[str, Any] = {
+            "messages": current_messages,
+            "stage": current_stage,
+            "auto_round_count": current_round,
+            "judge_state": None,
+            "consensus_board": None,
+            "canvas_consensus": [],
+            "canvas_disputes": [],
+            "memory_summary": memory_summary,
+            "active_role_ids": [role.get("id") for role in roles],
+            "last_user_message": user_message,
+        }
+        await _set_task_state(task_id, result_payload=base_result_payload)
+
+        while True:
+            if await _is_cancel_requested(task_id):
+                canceled_payload = {**base_result_payload, "messages": current_messages}
+                await _set_task_state(
+                    task_id,
+                    status="canceled",
+                    result_payload=canceled_payload,
+                    finished=True,
+                )
+                await _record_event(
+                    room_id=room_id,
+                    task_id=task_id,
+                    event_type="task.roundtable_orchestration.canceled",
+                    event_payload={"stage": current_stage, "auto_round_count": current_round},
+                )
+                return
+
+            speaking_roles = roles if auto_brainstorm else roles[:1]
+            transcript = _build_recent_transcript(
+                current_messages,
+                memory_summary=memory_summary,
+                max_messages=8,
+                max_chars=2600,
+            )
+
+            role_messages = await asyncio.gather(
+                *[
+                    _generate_role_reply(
+                        llm_settings,
+                        payload,
+                        role,
+                        current_stage,
+                        user_message,
+                        transcript,
+                        memory_summary,
+                    )
+                    for role in speaking_roles
+                ]
+            )
+            current_messages.extend(role_messages)
+            memory_summary = _merge_memory_summary(memory_summary, current_messages)
+            if current_stage == "brief":
+                current_round += 1
+
+            evaluation = await _evaluate_roundtable(
+                llm_settings,
+                payload,
+                current_messages,
+                current_round,
+                memory_summary,
+            )
+            judge_state = evaluation["judge_state"]
+            board_state = evaluation["consensus_board"]
+            canvas_items = _build_canvas_items(board_state, current_stage)
+
+            base_result_payload = {
+                **base_result_payload,
+                "messages": current_messages,
+                "stage": current_stage,
+                "auto_round_count": current_round,
+                "judge_state": judge_state,
+                "consensus_board": board_state,
+                "memory_summary": memory_summary,
+                "canvas_consensus": canvas_items["canvas_consensus"],
+                "canvas_disputes": canvas_items["canvas_disputes"],
+                "completed_stage": current_stage,
+            }
+            await _set_task_state(task_id, result_payload=base_result_payload)
+
+            if current_stage == "final":
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                await _set_task_state(
+                    task_id,
+                    status="completed",
+                    result_payload={**base_result_payload, "final_generated": True},
+                    finished=True,
+                )
+                await _record_event(
+                    room_id=room_id,
+                    task_id=task_id,
+                    event_type="task.roundtable_orchestration.completed",
+                    event_payload={
+                        "stage": current_stage,
+                        "auto_round_count": current_round,
+                        "message_count": len(current_messages),
+                    },
+                    duration_ms=duration_ms,
+                )
+                return
+
+            if not auto_continue:
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                await _set_task_state(
+                    task_id,
+                    status="completed",
+                    result_payload={**base_result_payload, "final_generated": False},
+                    finished=True,
+                )
+                await _record_event(
+                    room_id=room_id,
+                    task_id=task_id,
+                    event_type="task.roundtable_orchestration.completed",
+                    event_payload={
+                        "stage": current_stage,
+                        "auto_round_count": current_round,
+                        "message_count": len(current_messages),
+                    },
+                    duration_ms=duration_ms,
+                )
+                return
+
+            reached_expected_result = bool(judge_state.get("reached"))
+            reached_max_round = current_round >= max_dialogue_rounds
+            if reached_expected_result or reached_max_round:
+                current_stage = "final"
+                user_message = (
+                    (payload.get("prompt_templates") or {}).get("prompt_converge_trigger")
+                    or "我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。"
+                )
+                current_messages.append(
+                    {
+                        "id": f"m_host_{uuid.uuid4().hex[:10]}",
+                        "speaker_id": "host",
+                        "speaker_name": "主持人",
+                        "speaker_type": "user",
+                        "content": user_message,
+                        "streaming": False,
+                        "created_at": _utcnow().isoformat(),
+                    }
+                )
+                memory_summary = _merge_memory_summary(memory_summary, current_messages)
+                base_result_payload = {
+                    **base_result_payload,
+                    "messages": current_messages,
+                    "stage": current_stage,
+                    "last_user_message": user_message,
+                    "memory_summary": memory_summary,
+                    "transition_reason": "expected_result_reached" if reached_expected_result else "max_round_reached",
+                }
+                await _set_task_state(task_id, result_payload=base_result_payload)
+                continue
+
+            next_prompt = _safe_text(judge_state.get("nextFocus")) or "请继续围绕期望结果推进，补足关键证据、约束和执行路径。"
+            user_message = f"请继续推进：{next_prompt}"
+            current_messages.append(
+                {
+                    "id": f"m_host_{uuid.uuid4().hex[:10]}",
+                    "speaker_id": "host",
+                    "speaker_name": "主持人",
+                    "speaker_type": "user",
+                    "content": user_message,
+                    "streaming": False,
+                    "created_at": _utcnow().isoformat(),
+                }
+            )
+            memory_summary = _merge_memory_summary(memory_summary, current_messages)
+            base_result_payload = {
+                **base_result_payload,
+                "messages": current_messages,
+                "last_user_message": user_message,
+                "next_prompt": next_prompt,
+                "memory_summary": memory_summary,
+            }
+            await _set_task_state(task_id, result_payload=base_result_payload)
+    except Exception as exc:
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        await _set_task_state(task_id, status="failed", error_message=str(exc), finished=True)
+        await _record_event(
+            room_id=room_id,
+            task_id=task_id,
+            event_type="task.failed",
+            event_payload={"error": str(exc), "task_type": payload.get("task_type")},
+            success=False,
+            duration_ms=duration_ms,
+        )
+
+
 async def _process_runtime_task(task_id: str) -> None:
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(RuntimeTask).where(RuntimeTask.task_id == task_id))
@@ -161,7 +822,7 @@ async def _process_runtime_task(task_id: str) -> None:
 
         payload = task.request_payload or {}
         task.status = "running"
-        task.started_at = datetime.now(timezone.utc)
+        task.started_at = _utcnow()
         await db.commit()
 
     start_time = time.perf_counter()
@@ -179,6 +840,9 @@ async def _process_runtime_task(task_id: str) -> None:
                 _build_board_prompt(payload),
                 "你是一个高信噪比的会议书记员，只输出 JSON。",
             )
+        elif task.task_type == "roundtable_orchestration":
+            await _process_roundtable_task(task_id)
+            return
         else:
             raise RuntimeError("Unsupported task type")
 
@@ -190,7 +854,7 @@ async def _process_runtime_task(task_id: str) -> None:
                 return
             task.status = "completed"
             task.result_payload = result_payload
-            task.finished_at = datetime.now(timezone.utc)
+            task.finished_at = _utcnow()
             await db.commit()
 
         await _record_event(
@@ -208,7 +872,7 @@ async def _process_runtime_task(task_id: str) -> None:
             if task:
                 task.status = "failed"
                 task.error_message = str(exc)
-                task.finished_at = datetime.now(timezone.utc)
+                task.finished_at = _utcnow()
                 await db.commit()
 
         await _record_event(
@@ -221,18 +885,38 @@ async def _process_runtime_task(task_id: str) -> None:
         )
 
 
-async def _create_task(
+async def _create_task_from_payload(
     task_type: str,
-    request: RuntimeTaskCreateRequest,
+    room_id: str,
+    model_id: int,
+    request_payload: Dict[str, Any],
     db: AsyncSession,
 ) -> RuntimeTask:
     task = RuntimeTask(
         task_id=uuid.uuid4().hex,
         task_type=task_type,
-        room_id=request.room_id,
-        model_id=request.model_id,
+        room_id=room_id,
+        model_id=model_id,
         status="pending",
-        request_payload={
+        request_payload=request_payload,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    await _publish_task_stream_event(task.task_id, "task.created", _serialize_runtime_task(task))
+    return task
+
+
+async def _create_task(
+    task_type: str,
+    request: RuntimeTaskCreateRequest,
+    db: AsyncSession,
+) -> RuntimeTask:
+    return await _create_task_from_payload(
+        task_type,
+        request.room_id,
+        request.model_id,
+        {
             "task_type": task_type,
             "room_id": request.room_id,
             "model_id": request.model_id,
@@ -242,11 +926,8 @@ async def _create_task(
             "intent_card": request.intent_card or {},
             "trigger": request.trigger,
         },
+        db,
     )
-    db.add(task)
-    await db.commit()
-    await db.refresh(task)
-    return task
 
 
 @router.post("/progress-evaluations", response_model=RuntimeTaskResponse)
@@ -283,6 +964,66 @@ async def start_consensus_board(
     return task
 
 
+@router.post("/roundtable-runs", response_model=RuntimeTaskResponse)
+async def start_roundtable_run(
+    request: RuntimeRoundtableRunRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _create_task_from_payload(
+        "roundtable_orchestration",
+        request.room_id,
+        request.model_id,
+        {
+            "task_type": "roundtable_orchestration",
+            "room_id": request.room_id,
+            "model_id": request.model_id,
+            "user_message": request.user_message,
+            "user_message_id": request.user_message_id,
+            "roundtable_stage": request.roundtable_stage,
+            "auto_brainstorm": request.auto_brainstorm,
+            "auto_continue": request.auto_continue,
+            "max_dialogue_rounds": request.max_dialogue_rounds,
+            "auto_round_count": request.auto_round_count,
+            "intent_card": request.intent_card or {},
+            "expected_result": request.expected_result,
+            "system_prompt": request.system_prompt,
+            "prompt_templates": request.prompt_templates or {},
+            "roles": [role.model_dump() for role in request.roles],
+            "prior_messages": [message.model_dump() for message in request.prior_messages],
+            "trigger": request.trigger,
+        },
+        db,
+    )
+    background_tasks.add_task(_process_runtime_task, task.task_id)
+    await _record_event(
+        room_id=request.room_id,
+        task_id=task.task_id,
+        event_type="task.roundtable_orchestration.created",
+        event_payload={
+            "stage": request.roundtable_stage,
+            "trigger": request.trigger,
+            "role_count": len([role for role in request.roles if role.selected]),
+        },
+    )
+    return task
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=RuntimeTaskCancelResponse)
+async def cancel_runtime_task(task_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(RuntimeTask).where(RuntimeTask.task_id == task_id))
+    task = result.scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status in TERMINAL_STATUSES:
+        return RuntimeTaskCancelResponse(task_id=task.task_id, status=task.status)
+    task.status = "cancel_requested"
+    await db.commit()
+    await db.refresh(task)
+    await _publish_task_stream_event(task.task_id, "task.cancel_requested", _serialize_runtime_task(task))
+    return RuntimeTaskCancelResponse(task_id=task.task_id, status=task.status)
+
+
 @router.get("/tasks/{task_id}", response_model=RuntimeTaskResponse)
 async def get_runtime_task(task_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(RuntimeTask).where(RuntimeTask.task_id == task_id))
@@ -290,6 +1031,42 @@ async def get_runtime_task(task_id: str, db: AsyncSession = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+
+@router.get("/tasks/{task_id}/stream")
+async def stream_runtime_task(task_id: str, request: Request):
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(RuntimeTask).where(RuntimeTask.task_id == task_id))
+        task = result.scalars().first()
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        initial_payload = _serialize_runtime_task(task)
+
+    queue = _subscribe_task_stream(task_id)
+
+    async def event_generator():
+        try:
+            yield _format_sse_message("task.snapshot", {"event": "task.snapshot", "task": initial_payload})
+            if initial_payload["status"] in TERMINAL_STATUSES:
+                yield _format_sse_message("task.done", {"event": "task.done", "task": initial_payload})
+                return
+
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield _format_sse_message(str(payload.get("event") or "task.update"), payload)
+                    task_payload = payload.get("task") or {}
+                    if task_payload.get("status") in TERMINAL_STATUSES:
+                        yield _format_sse_message("task.done", payload)
+                        return
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            _unsubscribe_task_stream(task_id, queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.get("/rooms/{room_id}/snapshot", response_model=RuntimeRoomSnapshot)
@@ -314,21 +1091,43 @@ async def get_room_runtime_snapshot(room_id: str, db: AsyncSession = Depends(get
         .order_by(desc(RuntimeTask.finished_at), desc(RuntimeTask.id))
         .limit(1)
     )
+    roundtable_result = await db.execute(
+        select(RuntimeTask)
+        .where(
+            RuntimeTask.room_id == room_id,
+            RuntimeTask.task_type == "roundtable_orchestration",
+            RuntimeTask.status == "completed",
+        )
+        .order_by(desc(RuntimeTask.finished_at), desc(RuntimeTask.id))
+        .limit(1)
+    )
     pending_result = await db.execute(
         select(func.count(RuntimeTask.id)).where(
             RuntimeTask.room_id == room_id,
-            RuntimeTask.status.in_(["pending", "running"]),
+            RuntimeTask.status.in_(["pending", "running", "cancel_requested"]),
         )
     )
 
     latest_progress = progress_result.scalars().first()
     latest_board = board_result.scalars().first()
+    latest_roundtable = roundtable_result.scalars().first()
     pending_tasks = pending_result.scalar() or 0
+
+    if latest_roundtable and latest_roundtable.result_payload:
+        latest_progress_payload = latest_roundtable.result_payload.get("judge_state") or (
+            latest_progress.result_payload if latest_progress else None
+        )
+        latest_board_payload = latest_roundtable.result_payload.get("consensus_board") or (
+            latest_board.result_payload if latest_board else None
+        )
+    else:
+        latest_progress_payload = latest_progress.result_payload if latest_progress else None
+        latest_board_payload = latest_board.result_payload if latest_board else None
 
     return RuntimeRoomSnapshot(
         room_id=room_id,
-        latest_progress=latest_progress.result_payload if latest_progress else None,
-        latest_board=latest_board.result_payload if latest_board else None,
+        latest_progress=latest_progress_payload,
+        latest_board=latest_board_payload,
         pending_tasks=pending_tasks,
     )
 
@@ -366,19 +1165,25 @@ async def list_recent_runtime_events(
 @router.get("/metrics/summary", response_model=RuntimeMetricsSummary)
 async def get_runtime_metrics_summary(db: AsyncSession = Depends(get_db)):
     tasks = list((await db.execute(select(RuntimeTask))).scalars().all())
-    events = list((await db.execute(select(RuntimeEvent).order_by(desc(RuntimeEvent.created_at), desc(RuntimeEvent.id)).limit(20))).scalars().all())
+    events = list(
+        (
+            await db.execute(
+                select(RuntimeEvent).order_by(desc(RuntimeEvent.created_at), desc(RuntimeEvent.id)).limit(20)
+            )
+        ).scalars().all()
+    )
 
     completed_tasks = [task for task in tasks if task.status == "completed"]
     failed_tasks = [task for task in tasks if task.status == "failed"]
-    pending_tasks = [task for task in tasks if task.status in {"pending", "running"}]
-    durations = []
+    pending_tasks = [task for task in tasks if task.status in {"pending", "running", "cancel_requested"}]
+    durations: List[int] = []
     for task in completed_tasks:
         if task.started_at and task.finished_at:
             durations.append(int((task.finished_at - task.started_at).total_seconds() * 1000))
 
     total_events_result = await db.execute(select(func.count(RuntimeEvent.id)))
-    director_events_result = await db.execute(
-        select(func.count(RuntimeEvent.id)).where(RuntimeEvent.event_type.like("director.%"))
+    host_events_result = await db.execute(
+        select(func.count(RuntimeEvent.id)).where(RuntimeEvent.event_type.like("host.%"))
     )
     material_events_result = await db.execute(
         select(func.count(RuntimeEvent.id)).where(RuntimeEvent.event_type.like("material.%"))
@@ -391,7 +1196,7 @@ async def get_runtime_metrics_summary(db: AsyncSession = Depends(get_db)):
         pending_tasks=len(pending_tasks),
         avg_task_duration_ms=int(sum(durations) / len(durations)) if durations else 0,
         total_events=total_events_result.scalar() or 0,
-        director_events=director_events_result.scalar() or 0,
+        host_events=host_events_result.scalar() or 0,
         material_events=material_events_result.scalar() or 0,
         latest_events=events,
     )

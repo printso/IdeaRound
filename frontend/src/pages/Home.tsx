@@ -22,7 +22,7 @@ import {
   Progress,
   Tooltip,
 } from 'antd';
-import { DownOutlined, UpOutlined, RedoOutlined, PlusOutlined, AppstoreAddOutlined } from '@ant-design/icons';
+import { RedoOutlined, PlusOutlined, AppstoreAddOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -43,10 +43,10 @@ import {
   type WorkspaceData,
 } from '../api/workspace';
 import {
+  cancelRuntimeTask,
   getRoomRuntimeSnapshot,
-  getRuntimeTask,
-  startConsensusBoard,
-  startProgressEvaluation,
+  startRoundtableRun,
+  streamRuntimeTask,
   trackRuntimeEvent,
 } from '../api/runtime';
 import { useAuth } from '../contexts/AuthContext';
@@ -211,13 +211,12 @@ function Home() {
   const [intentReady, setIntentReady] = useState(savedState?.intentReady || false);
   const [roles, setRoles] = useState<RoleMember[]>(savedState?.roles || []);
   const [rolesReady, setRolesReady] = useState(savedState?.rolesReady || false);
-  const [roleTemplates, setRoleTemplates] = useState<{id: number; name: string; stance: string; description?: string; soul_config?: string; is_active?: boolean; is_default?: boolean}[]>([]);
+  const [roleTemplates, setRoleTemplates] = useState<{id: number; name: string; stance: string; description?: string; soul_config?: string; is_active?: boolean; is_default?: boolean; skill_tags?: string[]; category?: string}[]>([]);
   const [scenarioTemplates, setScenarioTemplates] = useState<{id: number; name: string; description?: string; preset_roles: number[]; system_prompt_override?: string; is_active: boolean}[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<Record<string, string>>({});
   const [roomReady, setRoomReady] = useState(savedState?.roomReady || false);
   const [roomId, setRoomId] = useState(savedState?.roomId || '');
   const [autoBrainstorm, setAutoBrainstorm] = useState(true);
-  const [rightPanels, setRightPanels] = useState({ control: false, consensus: false });
   const [systemPrompt, setSystemPrompt] = useState(savedState?.systemPrompt || '');
   const [userPrompt, setUserPrompt] = useState('');
   const [sending, setSending] = useState(false);
@@ -239,7 +238,7 @@ function Home() {
   const [backendWorkspaceIds, setBackendWorkspaceIds] = useState<Set<string>>(new Set());
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>(savedState?.roundtableStage || 'brief');
-  const [pendingAutoSend, setPendingAutoSend] = useState<{ roomId: string; text: string; stage: RoundtableStage } | null>(null);
+  const [pendingRoundtableRun, setPendingRoundtableRun] = useState<{ roomId: string; text: string; stage: RoundtableStage; trigger?: 'user' | 'host'; systemPrompt?: string } | null>(null);
   const [expectedResult, setExpectedResult] = useState(savedState?.expectedResult || '');
   const [uploadedMaterials, setUploadedMaterials] = useState<MaterialInfo[]>([]);
   const [preUploadRoomId] = useState<string>(`pre_${Date.now().toString(36)}`);
@@ -279,7 +278,8 @@ function Home() {
   const [isExpertMode, setIsExpertMode] = useState(false);
   const [newIdeaModalOpen, setNewIdeaModalOpen] = useState(false);
   const [newIdeaDraft, setNewIdeaDraft] = useState('');
-  const abortRef = useRef<AbortController | null>(null);
+  const activeRoundtableTaskIdRef = useRef<string | null>(null);
+  const roundtableStreamAbortRef = useRef<AbortController | null>(null);
   const suppressBackendSaveRef = useRef(false);
   const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasLoadedInitialDataRef = useRef(false);
@@ -499,76 +499,85 @@ function Home() {
     }
   }, [applyBoardResult, applyJudgeResult]);
 
-  const pollRuntimeTask = useCallback(async (taskId: string, taskType: 'progress' | 'board') => {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      try {
-        const task = await getRuntimeTask(taskId);
-        if (task.status === 'completed') {
-          if (taskType === 'progress') {
-            applyJudgeResult(task.result_payload || null);
-          } else {
-            applyBoardResult(task.result_payload || null);
+  const applyRoundtableTaskPayload = useCallback((payload?: Record<string, unknown> | null) => {
+    if (!payload) {
+      return;
+    }
+
+    const nextMessages = Array.isArray(payload.messages) ? payload.messages : [];
+    if (nextMessages.length > 0) {
+      setMessages(
+        nextMessages.map((msg) => {
+          const item = msg as Record<string, unknown>;
+          return {
+            id: String(item.id || ''),
+            speakerId: String(item.speaker_id || item.speakerId || ''),
+            speakerName: String(item.speaker_name || item.speakerName || ''),
+            speakerType: (item.speaker_type || item.speakerType || 'agent') as 'user' | 'agent',
+            content: String(item.content || ''),
+            streaming: Boolean(item.streaming),
+            createdAt: String(item.created_at || item.createdAt || ''),
+          };
+        }),
+      );
+    }
+
+    applyJudgeResult((payload.judge_state as Record<string, unknown> | undefined) || null);
+    applyBoardResult((payload.consensus_board as Record<string, unknown> | undefined) || null);
+    setCanvasConsensus(Array.isArray(payload.canvas_consensus) ? payload.canvas_consensus as string[] : []);
+    setCanvasDisputes(Array.isArray(payload.canvas_disputes) ? payload.canvas_disputes as string[] : []);
+    setCanvasUpdatedAt(new Date().toLocaleString());
+    if (payload.stage === 'brief' || payload.stage === 'final') {
+      setRoundtableStage(payload.stage);
+    }
+    if (typeof payload.auto_round_count === 'number') {
+      setAutoRoundCount(payload.auto_round_count);
+    }
+  }, [applyBoardResult, applyJudgeResult]);
+
+  const streamRoundtableTaskUpdates = useCallback(async (taskId: string) => {
+    roundtableStreamAbortRef.current?.abort();
+    const controller = new AbortController();
+    roundtableStreamAbortRef.current = controller;
+
+    await streamRuntimeTask(
+      taskId,
+      {
+        onTask: (task, eventName) => {
+          if (task.result_payload) {
+            applyRoundtableTaskPayload(task.result_payload as Record<string, unknown>);
           }
-          await refreshRuntimeSnapshot(task.room_id);
-          return;
-        }
-        if (task.status === 'failed') {
-          message.warning(task.error_message || '后台任务执行失败');
-          await refreshRuntimeSnapshot(task.room_id);
-          return;
-        }
-      } catch (error) {
-        console.error('轮询运行时任务失败:', error);
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 600));
-    }
-  }, [applyBoardResult, applyJudgeResult, refreshRuntimeSnapshot]);
 
-  const evaluateExpectedResultReached = useCallback(async (conversationText: string, currentRound: number) => {
-    if (!selectedModelId || !expectedResult.trim() || !roomId) {
-      return { reached: false, reason: '', nextPrompt: '', score: 0 };
-    }
+          if (task.status === 'failed') {
+            setSending(false);
+            message.warning(task.error_message || '后台任务执行失败');
+          } else if (task.status === 'canceled') {
+            setSending(false);
+            message.info('圆桌任务已停止');
+          } else if (task.status === 'completed') {
+            setSending(false);
+          }
 
-    try {
-      await refreshRuntimeSnapshot(roomId);
-
-      const progressTask = await startProgressEvaluation({
-        room_id: roomId,
-        model_id: selectedModelId,
-        transcript: conversationText,
-        expected_result: expectedResult,
-        current_round: currentRound,
-        intent_card: intentCard,
-        trigger: 'auto_round',
-      });
-      void pollRuntimeTask(progressTask.task_id, 'progress');
-
-      const boardTask = await startConsensusBoard({
-        room_id: roomId,
-        model_id: selectedModelId,
-        transcript: conversationText,
-        expected_result: expectedResult,
-        current_round: currentRound,
-        intent_card: intentCard,
-        trigger: 'auto_round',
-      });
-      void pollRuntimeTask(boardTask.task_id, 'board');
-
-      const fallbackReason = judgeState.reason || '等待裁判评估结果同步';
-      return {
-        reached: judgeState.reached || false,
-        reason: fallbackReason,
-        nextPrompt: judgeState.reached
-          ? ''
-          : `（裁判提示：当前目标达成度 ${judgeState.score || 0}%，原因：${fallbackReason}${judgeState.nextFocus ? `；下一步：${judgeState.nextFocus}` : ''}）`,
-        score: judgeState.score || 0,
-      };
-    } catch (err) {
-      console.error('裁判评估失败:', err);
-      return { reached: judgeState.reached || false, reason: '评估失败', nextPrompt: '', score: judgeState.score || 0 };
-    }
-  }, [expectedResult, intentCard, judgeState, pollRuntimeTask, refreshRuntimeSnapshot, roomId, selectedModelId]);
+          if (eventName === 'task.done' || task.status === 'completed' || task.status === 'failed' || task.status === 'canceled') {
+            activeRoundtableTaskIdRef.current = null;
+            roundtableStreamAbortRef.current = null;
+            void refreshRuntimeSnapshot(task.room_id);
+          }
+        },
+        onDone: () => {
+          roundtableStreamAbortRef.current = null;
+        },
+        onError: (error) => {
+          console.error('订阅圆桌任务流失败:', error);
+          setSending(false);
+          roundtableStreamAbortRef.current = null;
+          activeRoundtableTaskIdRef.current = null;
+          message.error(error);
+        },
+      },
+      { signal: controller.signal },
+    );
+  }, [applyRoundtableTaskPayload, refreshRuntimeSnapshot]);
 
   const loadWorkspaces = async () => {
     if (!isAuthenticated) {
@@ -1311,8 +1320,8 @@ ${JSON.stringify(roleCandidates, null, 2)}
         '请各角色先给出最关键的 3-5 条核心要点。',
       ].filter(Boolean);
       
-      setPendingAutoSend({ roomId: newRoomId, text: seedLines.join('\n'), stage: 'brief' });
-      message.success(`已应用模板：${template.name}，并自动进入圆桌`);
+      setPendingRoundtableRun({ roomId: newRoomId, text: seedLines.join('\n'), stage: 'brief', trigger: 'host' });
+      message.success(`已应用模板：${template.name}，并自动进入圆桌开始演练`);
       void trackRuntimeEvent({
         room_id: newRoomId,
         event_type: 'template.selected',
@@ -1448,7 +1457,7 @@ ${JSON.stringify(roleCandidates, null, 2)}
       setRoundtableStage('brief');
       setAutoRoundCount(0);
       setAutoConversationEnabled(true);
-      setPendingAutoSend(null);
+      setPendingRoundtableRun(null);
       setJudgeState({ score: 0, reason: '', reached: false, consensusCount: 0, resolvedPainPoints: 0, nextFocus: '' });
       setJudgeScore(0);
       setJudgeReason('');
@@ -1569,9 +1578,9 @@ ${JSON.stringify(roleCandidates, null, 2)}
       ].filter(Boolean);
       const seedText = seedLines.join('\n');
       if (seedText.trim()) {
-        setPendingAutoSend({ roomId: newRoomId, text: seedText, stage: 'brief' });
+        setPendingRoundtableRun({ roomId: newRoomId, text: seedText, stage: 'brief', trigger: 'host' });
       }
-      message.success('角色矩阵确认完成，已自动创建圆桌空间');
+      message.success('角色矩阵确认完成，已自动创建圆桌空间并开始演练');
     } finally {
       setIsCreatingWorkspace(false);
     }
@@ -1593,7 +1602,7 @@ ${JSON.stringify(roleCandidates, null, 2)}
     setCanvasDisputes([]);
     setCanvasUpdatedAt('');
     setRoundtableStage('brief');
-    setPendingAutoSend(null);
+    setPendingRoundtableRun(null);
     setExpectedResult('');
     setMaxDialogueRounds(6);
     setAutoRoundCount(0);
@@ -1694,72 +1703,26 @@ ${JSON.stringify(roleCandidates, null, 2)}
     message.success('名称已更新');
   };
 
-  const stopStreaming = () => {
-    abortRef.current?.abort();
-    abortRef.current = null;
+  const stopStreaming = useCallback(() => {
+    roundtableStreamAbortRef.current?.abort();
+    roundtableStreamAbortRef.current = null;
+    const taskId = activeRoundtableTaskIdRef.current;
+    activeRoundtableTaskIdRef.current = null;
     setSending(false);
-    setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
-    setPendingAutoSend(null);
-    setAutoConversationEnabled(false);
-  };
-
-  const buildTranscript = useCallback((items: { speakerName: string; content: string }[]) => {
-    const slice = items.slice(-12);
-    return slice.map((m) => `${m.speakerName}：${m.content}`).join('\n');
+    if (taskId) {
+      void cancelRuntimeTask(taskId).catch((error) => {
+        console.error('取消圆桌任务失败:', error);
+      });
+    }
   }, []);
 
-  const buildAgentSystemPrompt = useCallback((role: RoleMember, stage: RoundtableStage) => {
-    const base = [
-      promptTemplates.prompt_base || '你是圆桌创意中的一个角色，请保持高信噪比，避免客套话与重复。',
-      `你的身份：${role.name}（立场：${role.stance}）。`,
-      `用户意图锚点：${intentCard.coreGoal || '未提供'}。`,
-      expectedResult ? `本轮收敛目标（期望结果）：${expectedResult}` : '',
-      intentCard.constraints ? `限制条件：${intentCard.constraints}` : '',
-      intentCard.painPoints ? `待解决痛点：${intentCard.painPoints}` : '',
-    ].filter(Boolean);
-
-    // 注入灵魂配置
-    if (role.soulConfig) {
-      base.push('', role.soulConfig);
-    }
-
-    if (stage === 'brief') {
-      const isAudit = role.id === 'audit' || role.name.includes('审计官');
-      if (isAudit && promptTemplates.prompt_audit_brief) {
-        base.push('', promptTemplates.prompt_audit_brief);
-      } else if (promptTemplates.prompt_brief_stage) {
-        base.push('', promptTemplates.prompt_brief_stage);
-      } else {
-        // 默认值（如果数据库未配置）
-        base.push(
-          '当前处于「脑暴发散阶段」。',
-          '只输出核心要点：3-5 条，短句，单条不超过 100 个字。',
-          '不要输出总结性方案，不要写步骤/里程碑/落地计划，不要写"综上/总结/最终方案"。',
-          '直接给出你认为最关键的点即可。',
-          '用 Markdown 输出，建议使用无序列表。',
-        );
-      }
-    } else {
-      const isAudit = role.id === 'audit' || role.name.includes('审计官');
-      if (isAudit && promptTemplates.prompt_audit_final) {
-        base.push('', promptTemplates.prompt_audit_final);
-      } else if (promptTemplates.prompt_final_stage) {
-        base.push('', promptTemplates.prompt_final_stage);
-      } else {
-        // 默认值（如果数据库未配置）
-        base.push(
-          '当前处于「收敛定稿阶段」。',
-          '请基于当前对话给出总结性方案：目标拆解 → 关键路径 → 风险与对策 → 指标与验证 → 下一步行动清单。',
-          '请给出可执行的落地方案，避免空话。',
-          '用 Markdown 输出，结构清晰。',
-        );
-      }
-    }
-
-    return base.join('\n');
-  }, [expectedResult, intentCard.constraints, intentCard.coreGoal, intentCard.painPoints, promptTemplates]);
-
-  const sendToRoundtable = useCallback(async (overrideText?: string, overrideStage?: RoundtableStage) => {
+  const sendToRoundtable = useCallback(async (
+    overrideText?: string,
+    overrideStage?: RoundtableStage,
+    overrideSystemPrompt?: string,
+    trigger: 'user' | 'host' = 'user',
+    forceAutoContinue?: boolean,
+  ) => {
     if (!selectedModelId) {
       message.warning('请选择一个可用模型');
       return;
@@ -1779,236 +1742,106 @@ ${JSON.stringify(roleCandidates, null, 2)}
     }
 
     const stage = overrideStage ?? roundtableStage;
-    setAutoConversationEnabled(true);
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setSending(true);
-
-    const now = new Date().toLocaleTimeString();
     const userMessageId = `m_user_${Date.now()}`;
+    const optimisticSpeakerName = trigger === 'host' ? '主持人' : '我';
+    const nextMessages = [
+      ...messages,
+      {
+        id: userMessageId,
+        speakerId: trigger === 'host' ? 'host' : 'user',
+        speakerName: optimisticSpeakerName,
+        speakerType: 'user' as const,
+        content: userText,
+        createdAt: new Date().toLocaleTimeString(),
+      },
+    ];
+
     if (!overrideText) {
       setUserPrompt('');
     }
-
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: userMessageId,
-        speakerId: 'user',
-        speakerName: '我',
-        speakerType: 'user',
-        content: userText,
-        createdAt: now,
-      },
-    ]);
-
-    const selectedRoles = roles.filter((r) => r.selected);
-    const speakingRoles = autoBrainstorm ? selectedRoles : selectedRoles.slice(0, 1);
-
-    const conversationItems = [
-      ...messages,
-      { id: userMessageId, speakerId: 'user', speakerName: '我', speakerType: 'user' as const, content: userText, createdAt: now },
-    ].map((m) => ({ speakerName: m.speakerName, content: m.content }));
+    setRoundtableStage(stage);
+    setMessages(nextMessages);
+    setSending(true);
 
     try {
-      // 串行处理每个角色，确保每个角色都能看到前面所有角色的回答
-      for (const role of speakingRoles) {
-        const assistantId = `m_${role.id}_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`;
-        let roleReply = '';
-        
-        // 为当前角色创建消息条目
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: assistantId,
-            speakerId: role.id,
-            speakerName: role.name,
-            speakerType: 'agent',
-            content: '',
-            streaming: true,
-            createdAt: new Date().toLocaleTimeString(),
-          },
-        ]);
-
-        // 构建包含前面所有角色回答的对话记录
-        // conversationItems 已经包含了前面角色的回答
-        const fullTranscript = buildTranscript(conversationItems);
-        
-        // 增强系统提示词，强调需要考虑前面角色的回答和主题一致性
-        const previousRolesReplies = conversationItems
-          .filter(item => speakingRoles.some(r => r.name === item.speakerName))
-          .map(item => `${item.speakerName}：${item.content}`)
-          .join('\n\n');
-        
-        const enhancedSystemPrompt = `${buildAgentSystemPrompt(role, stage)}
-
-【对话上下文与主题一致性要求】
-你正在参与一个结构化圆桌讨论，前面已有其他角色发表观点。请严格遵循以下要求：
-
-1. 主题锚点：核心讨论围绕「${intentCard.coreGoal || '未指定目标'}」
-2. 上下文继承：前面角色的回答：
-${previousRolesReplies || '暂无其他角色回答，你是第一个发言的角色。'}
-
-3. 回答要求：
-   - 必须基于前面角色的观点进行回应或拓展
-   - 避免重复前面已经阐述过的内容
-   - 如提出新观点，需与前面讨论逻辑衔接
-   - 如有反对意见，需引用具体观点并给出理由
-   - 保持专业讨论氛围，避免偏离核心主题
-
-4. 输出格式：请直接给出你的观点，无需客套话。
-
-当前对话阶段：${stage === 'brief' ? '脑暴发散阶段 - 提出3-5个核心要点' : '收敛定稿阶段 - 给出总结性方案'}
-
-${systemPrompt.trim() ? `补充系统提示词：${systemPrompt.trim()}` : ''}`;
-
-        // 为主题一致性检查构建提示
-        const topicCheckPrompt = previousRolesReplies ? 
-          `（请注意：前面已有${conversationItems.filter(item => speakingRoles.some(r => r.name === item.speakerName)).length}位角色发言，请确保你的回答与他们的观点连贯，不要偏离核心主题）」` : 
-          '（你是第一个发言的角色，请围绕主题展开）」';
-        
-        await streamChatByLLMConfig(
-          selectedModelId,
-          {
-            message: `【对话主题】${intentCard.coreGoal || '未指定目标'}
-            
-【历史对话摘要】
-${fullTranscript || '暂无历史对话'}
-
-【本轮用户输入】
-${userText}
-
-【你的角色任务】
-作为「${role.name}」（立场：${role.stance}），请基于以上对话历史进行回应${topicCheckPrompt}`,
-            system_prompt: enhancedSystemPrompt,
-          },
-          {
-            onDelta: (delta) => {
-              roleReply += delta;
-              // 实时更新当前角色的消息内容
-              setMessages((prev) =>
-                prev.map((m) => {
-                  if (m.id !== assistantId) {
-                    return m;
-                  }
-                  return { ...m, content: m.content + delta, streaming: true };
-                }),
-              );
-            },
-            onDone: () => {
-              // 标记当前角色完成流式传输
-              setMessages((prev) =>
-                prev.map((m) => {
-                  if (m.id !== assistantId) {
-                    return m;
-                  }
-                  return { ...m, streaming: false };
-                }),
-              );
-            },
-            onError: (err) => {
-              roleReply = `${roleReply}\n\n> 错误：${err}`;
-              setMessages((prev) =>
-                prev.map((m) => {
-                  if (m.id !== assistantId) {
-                    return m;
-                  }
-                  return { ...m, content: `${m.content}\n\n> 错误：${err}`, streaming: false };
-                }),
-              );
-            },
-          },
-          { signal: controller.signal },
-        );
-        
-        // 将当前角色的回答添加到对话记录中，供后续角色参考
-        conversationItems.push({ speakerName: role.name, content: roleReply });
-      }
-
-      setCanvasConsensus((prev) => {
-        const next = [...prev];
-        const text = stage === 'final' ? '已输出总结性方案' : '已生成核心要点';
-        if (!next.includes(text)) {
-          next.push(text);
-        }
-        return next.slice(-6);
+      const task = await startRoundtableRun({
+        room_id: roomId,
+        model_id: selectedModelId,
+        user_message: userText,
+        user_message_id: userMessageId,
+        roundtable_stage: stage,
+        auto_brainstorm: autoBrainstorm,
+        auto_continue: forceAutoContinue ?? (stage === 'brief' ? autoConversationEnabled : false),
+        max_dialogue_rounds: maxDialogueRounds,
+        auto_round_count: autoRoundCount,
+        intent_card: intentCard,
+        expected_result: expectedResult,
+        system_prompt: overrideSystemPrompt ?? systemPrompt,
+        prompt_templates: promptTemplates,
+        roles: roles.map((role) => ({
+          id: role.id,
+          name: role.name,
+          stance: role.stance,
+          desc: role.desc,
+          selected: role.selected,
+          soul_config: role.soulConfig,
+        })),
+        prior_messages: messages.map((msg) => ({
+          id: msg.id,
+          speaker_id: msg.speakerId,
+          speaker_name: msg.speakerName,
+          speaker_type: msg.speakerType,
+          content: msg.content,
+          created_at: msg.createdAt,
+          streaming: false,
+        })),
+        trigger,
       });
-      setCanvasDisputes((prev) => {
-        const next = [...prev];
-        const text = stage === 'final' ? '仍需验证关键假设与指标' : '仍有未验证假设';
-        if (!next.includes(text)) {
-          next.push(text);
-        }
-        return next.slice(-6);
-      });
-      setCanvasUpdatedAt(new Date().toLocaleString());
-
-      if (stage === 'brief' && !controller.signal.aborted) {
-        const nextRound = autoRoundCount + 1;
-        setAutoRoundCount(nextRound);
-
-        const reachedMaxRound = nextRound >= maxDialogueRounds;
-        const checkResult = await evaluateExpectedResultReached(buildTranscript(conversationItems), nextRound);
-        const reachedExpectedResult = checkResult.reached;
-        const convergeMsg = promptTemplates.prompt_converge_trigger || '我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。';
-
-        if (reachedExpectedResult) {
-          message.success('已达到期望结果，自动停止脑暴并生成最终方案');
-          setRoundtableStage('final');
-          setPendingAutoSend({ roomId, text: convergeMsg, stage: 'final' });
-        } else if (reachedMaxRound) {
-          message.warning('已达到对话轮数上限，自动停止脑暴并生成最终方案');
-          setRoundtableStage('final');
-          setPendingAutoSend({ roomId, text: convergeMsg, stage: 'final' });
-        } else if (autoConversationEnabled) {
-          const nextPrompt = checkResult.nextPrompt || `请继续围绕期望结果推进，当前仍未收敛。${checkResult.reason ? `参考：${checkResult.reason}` : ''}`;
-          setPendingAutoSend({ roomId, text: nextPrompt, stage: 'brief' });
-        }
-      }
+      activeRoundtableTaskIdRef.current = task.task_id;
+      void streamRoundtableTaskUpdates(task.task_id);
     } catch (err) {
-      if (!controller.signal.aborted) {
-        const msg = err instanceof Error ? err.message : '请求失败';
-        message.error(msg);
-      }
-    } finally {
+      const msg = err instanceof Error ? err.message : '请求失败';
+      message.error(msg);
+      setMessages(messages);
       setSending(false);
-      abortRef.current = null;
+      activeRoundtableTaskIdRef.current = null;
+      roundtableStreamAbortRef.current = null;
     }
   }, [
     autoBrainstorm,
-    buildAgentSystemPrompt,
-    buildTranscript,
+    autoConversationEnabled,
+    autoRoundCount,
+    expectedResult,
+    intentCard,
+    maxDialogueRounds,
     messages,
-    roomReady,
+    promptTemplates,
     roles,
+    roomId,
+    roomReady,
     roundtableStage,
     selectedModelId,
     sending,
+    streamRoundtableTaskUpdates,
     systemPrompt,
     userPrompt,
-    autoRoundCount,
-    maxDialogueRounds,
-    evaluateExpectedResultReached,
-    promptTemplates.prompt_converge_trigger,
-    roomId,
-    autoConversationEnabled,
   ]);
 
   useEffect(() => {
-    if (!pendingAutoSend) {
+    if (!pendingRoundtableRun) {
       return;
     }
-    if (!roomReady || roomId !== pendingAutoSend.roomId) {
+    if (!roomReady || roomId !== pendingRoundtableRun.roomId || sending) {
       return;
     }
-    if (sending) {
-      return;
-    }
-    setPendingAutoSend(null);
-    setUserPrompt('');
-    void sendToRoundtable(pendingAutoSend.text, pendingAutoSend.stage);
-  }, [pendingAutoSend, roomId, roomReady, sending, sendToRoundtable]);
+    setPendingRoundtableRun(null);
+    void sendToRoundtable(
+      pendingRoundtableRun.text,
+      pendingRoundtableRun.stage,
+      pendingRoundtableRun.systemPrompt,
+      pendingRoundtableRun.trigger ?? 'host',
+    );
+  }, [pendingRoundtableRun, roomId, roomReady, sendToRoundtable, sending]);
 
   const generateFinalPlan = useCallback(() => {
     if (!roomReady) {
@@ -2021,17 +1854,15 @@ ${userText}
     }
     void trackRuntimeEvent({
       room_id: roomId,
-      event_type: 'director.summarize',
+      event_type: 'host.summarize',
       event_payload: { stage: roundtableStage, message_count: messages.length },
-    }).catch((error) => console.error('记录导演事件失败:', error));
-    setPendingAutoSend(null);
+    }).catch((error) => console.error('记录主持人事件失败:', error));
     setAutoConversationEnabled(false);
-    setRoundtableStage('final');
-    const convergeMsg = promptTemplates.prompt_converge_trigger || '我觉得讨论已经收敛，请各角色基于当前讨论输出总结性方案。';
-    void sendToRoundtable(convergeMsg, 'final');
+    const convergeMsg = promptTemplates.prompt_converge_trigger || '主持人判断讨论已经收敛，请各角色基于当前讨论输出总结性方案。';
+    void sendToRoundtable(convergeMsg, 'final', undefined, 'host', false);
   }, [messages.length, promptTemplates.prompt_converge_trigger, roomId, roomReady, roundtableStage, sendToRoundtable, sending]);
 
-  const applyDirectorAction = useCallback((action: string, injectedIdea?: string) => {
+  const applyHostAction = useCallback((action: string, injectedIdea?: string) => {
     if (!roomReady) {
       return;
     }
@@ -2046,11 +1877,11 @@ ${userText}
 
     switch (action) {
       case 'focus':
-        overrideText = '（导演指令）各位专家跑题了，请立刻回到我们的核心目标和痛点上！';
+        overrideText = '（主持人提示）各位专家跑题了，请立刻回到我们的核心目标和痛点上！';
         hiddenPrompt = `【系统最高指令】用户认为当前讨论已经偏离主题。请你接下来的发言必须强行拉回到核心目标「${intentCard.coreGoal}」，并针对痛点「${intentCard.painPoints}」给出看法，停止发散。`;
         break;
       case 'conflict':
-        overrideText = '（导演指令）现在的讨论太温和了，我需要看到更尖锐的批评和对抗！';
+        overrideText = '（主持人提示）现在的讨论太温和了，我需要看到更尖锐的批评和对抗！';
         hiddenPrompt = '【系统最高指令】用户希望看到更激烈的对抗。请你在接下来的发言中，必须找到上一位发言者的漏洞，进行尖锐反驳，并提出极具挑战性的问题。';
         break;
       case 'new_idea': {
@@ -2059,7 +1890,7 @@ ${userText}
           setNewIdeaModalOpen(true);
           return;
         }
-        overrideText = `（导演指令）我有一个新点子：${idea}。请大家评估。`;
+        overrideText = `（主持人提示）我有一个新点子：${idea}。请大家评估。`;
         hiddenPrompt = `【系统最高指令】用户提出了一个新点子：「${idea}」。无论当前处于什么阶段，请立即评估这个点子的最大优势和致命风险。`;
         eventPayload = { ...eventPayload, idea };
         break;
@@ -2073,18 +1904,14 @@ ${userText}
 
     void trackRuntimeEvent({
       room_id: roomId,
-      event_type: `director.${action}`,
+      event_type: `host.${action}`,
       event_payload: eventPayload,
-    }).catch((error) => console.error('记录导演事件失败:', error));
+    }).catch((error) => console.error('记录主持人事件失败:', error));
 
     if (overrideText) {
-      const originalSystemPrompt = systemPrompt;
-      setSystemPrompt(hiddenPrompt);
-      void sendToRoundtable(overrideText, roundtableStage).finally(() => {
-        setSystemPrompt(originalSystemPrompt);
-      });
+      void sendToRoundtable(overrideText, roundtableStage, hiddenPrompt, 'host');
     }
-  }, [generateFinalPlan, intentCard.coreGoal, intentCard.painPoints, roomId, roomReady, roundtableStage, sendToRoundtable, sending, systemPrompt]);
+  }, [generateFinalPlan, intentCard.coreGoal, intentCard.painPoints, roomId, roomReady, roundtableStage, sendToRoundtable, sending]);
 
   const canGoRoles = intentReady;
 
@@ -2878,7 +2705,7 @@ ${userText}
                 }
                 setNewIdeaModalOpen(false);
                 setNewIdeaDraft('');
-                applyDirectorAction('new_idea', idea);
+                applyHostAction('new_idea', idea);
               }}
               okText="提交给圆桌"
               cancelText="取消"
@@ -3096,11 +2923,11 @@ ${userText}
                 <Col flex="auto">
                   <Space direction="vertical" style={{ width: '100%' }}>
                     <Space style={{ marginBottom: 8 }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>🎬 超级导演干预：</Text>
-                      <Button size="small" onClick={() => applyDirectorAction('focus')}>🎯 跑题拉回</Button>
-                      <Button size="small" onClick={() => applyDirectorAction('conflict')}>⚔️ 加大对抗</Button>
+                      <Text type="secondary" style={{ fontSize: 12 }}>🎤 主持人干预：</Text>
+                      <Button size="small" onClick={() => applyHostAction('focus')}>🎯 跑题拉回</Button>
+                      <Button size="small" onClick={() => applyHostAction('conflict')}>⚔️ 加大对抗</Button>
                       <Button size="small" onClick={() => setNewIdeaModalOpen(true)}>💡 提新点子</Button>
-                      <Button size="small" onClick={() => applyDirectorAction('summarize')} danger>🛑 直接总结</Button>
+                      <Button size="small" onClick={() => applyHostAction('summarize')} danger>🛑 直接总结</Button>
                     </Space>
                     <Input.TextArea
                       rows={3}

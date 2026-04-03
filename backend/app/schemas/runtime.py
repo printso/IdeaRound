@@ -14,6 +14,44 @@ class RuntimeTaskCreateRequest(BaseModel):
     trigger: Optional[str] = None
 
 
+class RuntimeRoleRequest(BaseModel):
+    id: str
+    name: str
+    stance: str
+    desc: str
+    selected: bool
+    soul_config: Optional[str] = None
+
+
+class RuntimeRoundtableMessageRequest(BaseModel):
+    id: str
+    speaker_id: str
+    speaker_name: str
+    speaker_type: str
+    content: str
+    created_at: str
+    streaming: Optional[bool] = False
+
+
+class RuntimeRoundtableRunRequest(BaseModel):
+    room_id: str
+    model_id: int
+    user_message: str
+    user_message_id: Optional[str] = None
+    roundtable_stage: str = "brief"
+    auto_brainstorm: bool = True
+    auto_continue: bool = True
+    max_dialogue_rounds: int = 6
+    auto_round_count: int = 0
+    intent_card: Optional[Dict[str, str]] = None
+    expected_result: str = ""
+    system_prompt: str = ""
+    prompt_templates: Optional[Dict[str, str]] = None
+    roles: List[RuntimeRoleRequest]
+    prior_messages: List[RuntimeRoundtableMessageRequest] = []
+    trigger: Optional[str] = None
+
+
 class RuntimeTaskResponse(BaseModel):
     task_id: str
     task_type: str
@@ -67,6 +105,11 @@ class RuntimeMetricsSummary(BaseModel):
     pending_tasks: int
     avg_task_duration_ms: int
     total_events: int
-    director_events: int
+    host_events: int
     material_events: int
     latest_events: List[RuntimeEventResponse]
+
+
+class RuntimeTaskCancelResponse(BaseModel):
+    task_id: str
+    status: str

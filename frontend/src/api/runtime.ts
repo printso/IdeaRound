@@ -10,6 +10,44 @@ export interface RuntimeTaskRequest {
   trigger?: string;
 }
 
+export interface RuntimeRoundtableRole {
+  id: string;
+  name: string;
+  stance: string;
+  desc: string;
+  selected: boolean;
+  soul_config?: string;
+}
+
+export interface RuntimeRoundtableMessage {
+  id: string;
+  speaker_id: string;
+  speaker_name: string;
+  speaker_type: 'user' | 'agent';
+  content: string;
+  created_at: string;
+  streaming?: boolean;
+}
+
+export interface RuntimeRoundtableRunRequest {
+  room_id: string;
+  model_id: number;
+  user_message: string;
+  user_message_id?: string;
+  roundtable_stage: 'brief' | 'final';
+  auto_brainstorm: boolean;
+  auto_continue: boolean;
+  max_dialogue_rounds: number;
+  auto_round_count: number;
+  intent_card?: Record<string, string>;
+  expected_result?: string;
+  system_prompt?: string;
+  prompt_templates?: Record<string, string>;
+  roles: RuntimeRoundtableRole[];
+  prior_messages: RuntimeRoundtableMessage[];
+  trigger?: string;
+}
+
 export interface RuntimeTaskResponse {
   task_id: string;
   task_type: string;
@@ -48,9 +86,14 @@ export interface RuntimeMetricsSummary {
   pending_tasks: number;
   avg_task_duration_ms: number;
   total_events: number;
-  director_events: number;
+  host_events: number;
   material_events: number;
   latest_events: RuntimeEvent[];
+}
+
+export interface RuntimeTaskCancelResponse {
+  task_id: string;
+  status: string;
 }
 
 const getHeaders = () => {
@@ -88,8 +131,101 @@ export const startConsensusBoard = (payload: RuntimeTaskRequest) =>
     body: JSON.stringify(payload),
   });
 
+export const startRoundtableRun = (payload: RuntimeRoundtableRunRequest) =>
+  requestJson<RuntimeTaskResponse>('/api/v1/runtime/roundtable-runs', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
 export const getRuntimeTask = (taskId: string) =>
   requestJson<RuntimeTaskResponse>(`/api/v1/runtime/tasks/${encodeURIComponent(taskId)}`);
+
+export const streamRuntimeTask = async (
+  taskId: string,
+  callbacks: {
+    onTask: (task: RuntimeTaskResponse, event: string) => void;
+    onDone: () => void;
+    onError: (error: string) => void;
+  },
+  options?: { signal?: AbortSignal },
+) => {
+  try {
+    const response = await fetch(`/api/v1/runtime/tasks/${encodeURIComponent(taskId)}/stream`, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/event-stream',
+        ...(localStorage.getItem('access_token')
+          ? { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
+          : {}),
+      },
+      signal: options?.signal,
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.detail || '任务流订阅失败');
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('No reader available');
+    }
+
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let currentEvent = 'message';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split('\n\n');
+      buffer = chunks.pop() || '';
+
+      for (const chunk of chunks) {
+        const lines = chunk.split('\n');
+        let dataStr = '';
+        currentEvent = 'message';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            dataStr += line.slice(6);
+          }
+        }
+        if (!dataStr) {
+          continue;
+        }
+        try {
+          const data = JSON.parse(dataStr) as { event?: string; task?: RuntimeTaskResponse };
+          if (data.task) {
+            callbacks.onTask(data.task, data.event || currentEvent);
+          }
+          if ((data.event || currentEvent) === 'task.done') {
+            callbacks.onDone();
+            return;
+          }
+        } catch (error) {
+          console.error('SSE parse error:', error, dataStr);
+        }
+      }
+    }
+    callbacks.onDone();
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      callbacks.onDone();
+    } else {
+      callbacks.onError(error.message || '任务流连接失败');
+    }
+  }
+};
+
+export const cancelRuntimeTask = (taskId: string) =>
+  requestJson<RuntimeTaskCancelResponse>(`/api/v1/runtime/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: 'POST',
+  });
 
 export const getRoomRuntimeSnapshot = (roomId: string) =>
   requestJson<RuntimeSnapshot>(`/api/v1/runtime/rooms/${encodeURIComponent(roomId)}/snapshot`);
