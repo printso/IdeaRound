@@ -101,6 +101,28 @@ const RuntimeMonitor: React.FC = () => {
         </Col>
       </Row>
 
+      <Row gutter={16}>
+        <Col xs={24} md={8}>
+          <Card loading={loading}>
+            <Statistic title="摘要平均 RT" value={metrics?.avg_summary_duration_ms || 0} suffix="ms" />
+          </Card>
+        </Col>
+        <Col xs={24} md={8}>
+          <Card loading={loading}>
+            <Statistic title="摘要 P95 RT" value={metrics?.p95_summary_duration_ms || 0} suffix="ms" />
+          </Card>
+        </Col>
+        <Col xs={24} md={8}>
+          <Card loading={loading}>
+            <Statistic
+              title="精简模式渗透率"
+              value={metrics?.compact_mode_penetration || 0}
+              suffix={`% / ${metrics?.compact_mode_users || 0}/${metrics?.tracked_view_mode_users || 0}`}
+            />
+          </Card>
+        </Col>
+      </Row>
+
       <Card title="最近事件" loading={loading}>
         <Table
           columns={columns}

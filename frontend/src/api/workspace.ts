@@ -1,25 +1,9 @@
+// Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
 import { message } from 'antd';
+import { buildApiUrl, buildRequestHeaders, requestJson } from './fetchClient';
 
-const API_BASE_URL = '/api/v1/workspaces/';
-
-const buildWorkspaceUrl = (roomId?: string) => {
-  if (!roomId) {
-    return API_BASE_URL;
-  }
-  return `${API_BASE_URL}${encodeURIComponent(roomId)}`;
-};
-
-// 获取当前 token
-const getAuthHeaders = () => {
-  const token = localStorage.getItem('access_token');
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  return headers;
-};
+const buildWorkspaceUrl = (roomId?: string) =>
+  `/workspaces/${roomId ? encodeURIComponent(roomId) : ''}`;
 
 // 转换驼峰命名为蛇形命名
 const toSnakeCase = (obj: any): any => {
@@ -66,6 +50,8 @@ export interface WorkspaceData {
     speaker_id: string;
     speaker_name: string;
     speaker_type: string;
+    summary?: string;
+    summary_metrics?: Record<string, unknown> | null;
     speakerId?: string;
     speakerName?: string;
     speakerType?: string;
@@ -119,47 +105,32 @@ export interface WorkspaceResponse {
  */
 export const createWorkspace = async (workspaceData: WorkspaceData): Promise<WorkspaceResponse> => {
   try {
-    // 转换数据为蛇形命名以匹配后端 schema
     const snakeCaseData = toSnakeCase(workspaceData);
-    
-    const response = await fetch(buildWorkspaceUrl(), {
+
+    return await requestJson<WorkspaceResponse>(buildWorkspaceUrl(), {
       method: 'POST',
-      headers: getAuthHeaders(),
       body: JSON.stringify({
         room_id: workspaceData.room_id,
         room_name: workspaceData.room_name,
         data: snakeCaseData,
       }),
     });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      // 如果是"该圆桌空间已存在"错误，尝试更新而不是报错
-      if (errorData.detail?.includes('该圆桌空间已存在')) {
-        console.warn('工作台已存在，尝试更新');
-        // 返回一个假的响应，避免阻塞流程
-        return {
-          id: 0,
-          user_id: 0,
-          room_id: workspaceData.room_id,
-          data: workspaceData,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-      }
-      throw new Error(errorData.detail || '创建工作台失败');
-    }
-
-    return await response.json();
   } catch (error: any) {
-    // 静默处理 401 错误
+    if (error.message?.includes('该圆桌空间已存在')) {
+      console.warn('工作台已存在，使用当前状态继续流程');
+      return {
+        id: 0,
+        user_id: 0,
+        room_id: workspaceData.room_id,
+        data: workspaceData,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+    }
     if (error.message?.includes('未提供认证令牌') || error.message?.includes('401')) {
       throw error;
     }
-    // 如果错误是关于已存在的，不显示错误消息
-    if (!error.message?.includes('该圆桌空间已存在')) {
-      message.error(error.message || '创建工作台失败');
-    }
+    message.error(error.message || '创建工作台失败');
     throw error;
   }
 };
@@ -169,21 +140,8 @@ export const createWorkspace = async (workspaceData: WorkspaceData): Promise<Wor
  */
 export const listWorkspaces = async (): Promise<WorkspaceResponse[]> => {
   try {
-    const response = await fetch(buildWorkspaceUrl(), {
-      headers: getAuthHeaders(),
-    });
-
-    if (!response.ok) {
-      // 如果是 401 错误，可能是未登录，不显示错误消息
-      if (response.status === 401) {
-        return [];
-      }
-      throw new Error('获取工作台列表失败');
-    }
-
-    return await response.json();
+    return await requestJson<WorkspaceResponse[]>(buildWorkspaceUrl());
   } catch (error: any) {
-    // 静默处理 401 错误，避免在未登录时显示错误
     if (error.message?.includes('未提供认证令牌') || error.message?.includes('401')) {
       return [];
     }
@@ -197,19 +155,11 @@ export const listWorkspaces = async (): Promise<WorkspaceResponse[]> => {
  */
 export const getWorkspace = async (roomId: string): Promise<WorkspaceResponse | null> => {
   try {
-    const response = await fetch(buildWorkspaceUrl(roomId), {
-      headers: getAuthHeaders(),
-    });
-
-    if (!response.ok) {
-      if (response.status === 404 || response.status === 401) {
-        return null;
-      }
-      throw new Error('获取工作台失败');
-    }
-
-    return await response.json();
+    return await requestJson<WorkspaceResponse>(buildWorkspaceUrl(roomId));
   } catch (error: any) {
+    if (error.message?.includes('404') || error.message?.includes('401') || error.message?.includes('未提供认证令牌')) {
+      return null;
+    }
     console.error('获取工作台失败:', error);
     return null;
   }
@@ -220,25 +170,15 @@ export const getWorkspace = async (roomId: string): Promise<WorkspaceResponse | 
  */
 export const updateWorkspace = async (roomId: string, workspaceData: WorkspaceData): Promise<WorkspaceResponse> => {
   try {
-    // 转换数据为蛇形命名以匹配后端 schema
     const snakeCaseData = toSnakeCase(workspaceData);
-    
-    const response = await fetch(buildWorkspaceUrl(roomId), {
+
+    return await requestJson<WorkspaceResponse>(buildWorkspaceUrl(roomId), {
       method: 'PUT',
-      headers: getAuthHeaders(),
       body: JSON.stringify({
         data: snakeCaseData,
       }),
     });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || '更新工作台失败');
-    }
-
-    return await response.json();
   } catch (error: any) {
-    // 静默处理 401 错误
     if (error.message?.includes('未提供认证令牌') || error.message?.includes('401')) {
       throw error;
     }
@@ -252,9 +192,11 @@ export const updateWorkspace = async (roomId: string, workspaceData: WorkspaceDa
  */
 export const deleteWorkspace = async (roomId: string): Promise<void> => {
   try {
-    const response = await fetch(buildWorkspaceUrl(roomId), {
+    const response = await fetch(buildApiUrl(buildWorkspaceUrl(roomId)), {
       method: 'DELETE',
-      headers: getAuthHeaders(),
+      headers: buildRequestHeaders({
+        method: 'DELETE',
+      }),
     });
 
     if (!response.ok) {

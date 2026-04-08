@@ -1,4 +1,6 @@
+// Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
 type RuntimePayload = Record<string, unknown>;
+import { buildApiUrl, buildRequestHeaders, requestJson } from './fetchClient';
 
 export interface RuntimeTaskRequest {
   room_id: string;
@@ -25,6 +27,8 @@ export interface RuntimeRoundtableMessage {
   speaker_name: string;
   speaker_type: 'user' | 'agent';
   content: string;
+  summary?: string;
+  summary_metrics?: Record<string, unknown> | null;
   created_at: string;
   streaming?: boolean;
 }
@@ -71,6 +75,7 @@ export interface RuntimeSnapshot {
 export interface RuntimeEvent {
   id: number;
   room_id?: string | null;
+  user_id?: number | null;
   task_id?: string | null;
   event_type: string;
   success: boolean;
@@ -85,10 +90,37 @@ export interface RuntimeMetricsSummary {
   failed_tasks: number;
   pending_tasks: number;
   avg_task_duration_ms: number;
+  avg_summary_duration_ms: number;
+  p95_summary_duration_ms: number;
   total_events: number;
   host_events: number;
   material_events: number;
+  compact_mode_penetration: number;
+  compact_mode_users: number;
+  tracked_view_mode_users: number;
   latest_events: RuntimeEvent[];
+}
+
+export interface RuntimeMessageSummaryRequest {
+  room_id?: string;
+  model_id: number;
+  force_refresh?: boolean;
+  messages: RuntimeRoundtableMessage[];
+}
+
+export interface RuntimeMessageSummaryItem {
+  message_id: string;
+  summary: string;
+  semantic_consistency: number;
+  duration_ms: number;
+  cache_hit: boolean;
+  meets_rt_target: boolean;
+}
+
+export interface RuntimeMessageSummaryResponse {
+  items: RuntimeMessageSummaryItem[];
+  avg_duration_ms: number;
+  p95_duration_ms: number;
 }
 
 export interface RuntimeTaskCancelResponse {
@@ -96,49 +128,26 @@ export interface RuntimeTaskCancelResponse {
   status: string;
 }
 
-const getHeaders = () => {
-  const token = localStorage.getItem('access_token');
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-};
-
-const requestJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      ...getHeaders(),
-      ...(init?.headers || {}),
-    },
-  });
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || '请求失败');
-  }
-  return response.json();
-};
-
 export const startProgressEvaluation = (payload: RuntimeTaskRequest) =>
-  requestJson<RuntimeTaskResponse>('/api/v1/runtime/progress-evaluations', {
+  requestJson<RuntimeTaskResponse>('/runtime/progress-evaluations', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 
 export const startConsensusBoard = (payload: RuntimeTaskRequest) =>
-  requestJson<RuntimeTaskResponse>('/api/v1/runtime/consensus-boards', {
+  requestJson<RuntimeTaskResponse>('/runtime/consensus-boards', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 
 export const startRoundtableRun = (payload: RuntimeRoundtableRunRequest) =>
-  requestJson<RuntimeTaskResponse>('/api/v1/runtime/roundtable-runs', {
+  requestJson<RuntimeTaskResponse>('/runtime/roundtable-runs', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 
 export const getRuntimeTask = (taskId: string) =>
-  requestJson<RuntimeTaskResponse>(`/api/v1/runtime/tasks/${encodeURIComponent(taskId)}`);
+  requestJson<RuntimeTaskResponse>(`/runtime/tasks/${encodeURIComponent(taskId)}`);
 
 export const streamRuntimeTask = async (
   taskId: string,
@@ -150,14 +159,13 @@ export const streamRuntimeTask = async (
   options?: { signal?: AbortSignal },
 ) => {
   try {
-    const response = await fetch(`/api/v1/runtime/tasks/${encodeURIComponent(taskId)}/stream`, {
+    const response = await fetch(buildApiUrl(`/runtime/tasks/${encodeURIComponent(taskId)}/stream`), {
       method: 'GET',
-      headers: {
-        Accept: 'text/event-stream',
-        ...(localStorage.getItem('access_token')
-          ? { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
-          : {}),
-      },
+      headers: (() => {
+        const headers = buildRequestHeaders(undefined);
+        headers.set('Accept', 'text/event-stream');
+        return headers;
+      })(),
       signal: options?.signal,
     });
 
@@ -223,28 +231,35 @@ export const streamRuntimeTask = async (
 };
 
 export const cancelRuntimeTask = (taskId: string) =>
-  requestJson<RuntimeTaskCancelResponse>(`/api/v1/runtime/tasks/${encodeURIComponent(taskId)}/cancel`, {
+  requestJson<RuntimeTaskCancelResponse>(`/runtime/tasks/${encodeURIComponent(taskId)}/cancel`, {
     method: 'POST',
   });
 
 export const getRoomRuntimeSnapshot = (roomId: string) =>
-  requestJson<RuntimeSnapshot>(`/api/v1/runtime/rooms/${encodeURIComponent(roomId)}/snapshot`);
+  requestJson<RuntimeSnapshot>(`/runtime/rooms/${encodeURIComponent(roomId)}/snapshot`);
 
 export const trackRuntimeEvent = (payload: {
   room_id?: string;
+  user_id?: number;
   event_type: string;
   task_id?: string;
   success?: boolean;
   duration_ms?: number;
   event_payload?: RuntimePayload;
 }) =>
-  requestJson<RuntimeEvent>('/api/v1/runtime/events', {
+  requestJson<RuntimeEvent>('/runtime/events', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 
 export const getRuntimeMetricsSummary = () =>
-  requestJson<RuntimeMetricsSummary>('/api/v1/runtime/metrics/summary');
+  requestJson<RuntimeMetricsSummary>('/runtime/metrics/summary');
 
 export const getRecentRuntimeEvents = (limit = 20) =>
-  requestJson<RuntimeEvent[]>(`/api/v1/runtime/events/recent?limit=${limit}`);
+  requestJson<RuntimeEvent[]>(`/runtime/events/recent?limit=${limit}`);
+
+export const summarizeRoundtableMessages = (payload: RuntimeMessageSummaryRequest) =>
+  requestJson<RuntimeMessageSummaryResponse>('/runtime/message-summaries', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });

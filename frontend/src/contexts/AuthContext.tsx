@@ -1,20 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import { message } from 'antd';
-
-interface UserInfo {
-  id: number;
-  username: string;
-  email: string;
-  nickname?: string;
-  avatar?: string;
-  is_active: boolean;
-  is_superuser: boolean;
-  roles?: Array<{
-    id: number;
-    name: string;
-    description?: string;
-  }>;
-}
+import { getCurrentUser, loginByPassword, refreshAccessToken as refreshAccessTokenApi, type UserInfo } from '../api/auth';
+import {
+  clearAuthSession,
+  getAccessToken,
+  getRefreshToken,
+  persistAuthSession,
+} from '../auth/session';
 
 interface AuthContextType {
   user: UserInfo | null;
@@ -30,19 +22,10 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// API 基础 URL
-const API_BASE_URL = '/api/v1';
-
-// 存储 key
-const TOKEN_KEY = 'access_token';
-const REFRESH_TOKEN_KEY = 'refresh_token';
-
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserInfo | null>(null);
-  const [token, setToken] = useState<string | null>(localStorage.getItem(TOKEN_KEY));
-  const [refreshToken, setRefreshToken] = useState<string | null>(
-    localStorage.getItem(REFRESH_TOKEN_KEY)
-  );
+  const [token, setToken] = useState<string | null>(getAccessToken());
+  const [refreshToken, setRefreshToken] = useState<string | null>(getRefreshToken());
   const [isLoading, setIsLoading] = useState(true);
 
   // 获取当前用户信息 - 接受可选的 token 参数
@@ -56,30 +39,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/me`, {
-        headers: {
-          Authorization: `Bearer ${currentToken}`,
-        },
-      });
-
-      if (response.ok) {
-        const userData = await response.json();
-        setUser(userData);
-        setIsLoading(false);
-        return true;
-      } else if (response.status === 401) {
-        // Token 可能过期，尝试刷新
+      const userData = await getCurrentUser();
+      setUser(userData);
+      setIsLoading(false);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '';
+      if (errorMessage.includes('401') || errorMessage.includes('无效的认证令牌') || errorMessage.includes('未提供认证令牌')) {
         const refreshed = await refreshAccessToken();
         if (refreshed) {
-          // 刷新成功后使用新 token 重新获取用户信息
-          const newToken = localStorage.getItem(TOKEN_KEY);
-          return await fetchUserInfo(newToken);
+          return fetchUserInfo(getAccessToken());
         }
       }
-      // 其他错误状态
-      setIsLoading(false);
-      return false;
-    } catch (error) {
       console.error('获取用户信息失败:', error);
       setUser(null);
       setIsLoading(false);
@@ -92,32 +63,19 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!refreshToken) {
       setToken(null);
       setRefreshToken(null);
-      localStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(REFRESH_TOKEN_KEY);
+      clearAuthSession();
       return false;
     }
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ refresh_token: refreshToken }),
+      const data = await refreshAccessTokenApi(refreshToken);
+      persistAuthSession({
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token,
       });
-
-      if (response.ok) {
-        const data = await response.json();
-        setToken(data.access_token);
-        setRefreshToken(data.refresh_token);
-        localStorage.setItem(TOKEN_KEY, data.access_token);
-        localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
-        return true;
-      } else {
-        // 刷新失败，清除所有 token
-        logout();
-        return false;
-      }
+      setToken(data.access_token);
+      setRefreshToken(data.refresh_token);
+      return true;
     } catch (error) {
       console.error('刷新令牌失败:', error);
       logout();
@@ -128,24 +86,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // 登录
   const login = async (username: string, password: string) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ username, password }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || '登录失败');
-      }
-
-      const data = await response.json();
+      const data = await loginByPassword(username, password);
       
-      // 先保存到 localStorage
-      localStorage.setItem(TOKEN_KEY, data.access_token);
-      localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
+      persistAuthSession({
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token,
+      });
       
       // 更新 state
       setToken(data.access_token);
@@ -169,8 +115,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setToken(null);
     setRefreshToken(null);
     setUser(null);
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(REFRESH_TOKEN_KEY);
+    clearAuthSession();
     message.success('已退出登录');
   };
 

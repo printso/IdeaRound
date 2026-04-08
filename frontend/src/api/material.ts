@@ -1,15 +1,8 @@
+// Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
 import { message } from 'antd';
+import { buildApiUrl, buildRequestHeaders, requestJson } from './fetchClient';
 
-const API_BASE_URL = '/api/v1/materials/';
-
-const getAuthHeaders = () => {
-  const token = localStorage.getItem('access_token');
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  return headers;
-};
+const API_BASE_URL = '/materials/';
 
 export type MaterialType = 'document' | 'image' | 'audio' | 'video';
 
@@ -75,11 +68,7 @@ export interface SupportedFormats {
 
 export const getSupportedFormats = async (): Promise<SupportedFormats> => {
   try {
-    const response = await fetch(`${API_BASE_URL}formats/supported`);
-    if (!response.ok) {
-      throw new Error('Failed to get supported formats');
-    }
-    return await response.json();
+    return await requestJson<SupportedFormats>(`${API_BASE_URL}formats/supported`);
   } catch (error: any) {
     message.error(error.message || '获取支持的格式失败');
     throw error;
@@ -127,11 +116,12 @@ export const uploadMaterial = async (
     };
 
     // room_id 作为 Query 参数附加到 URL
-    const url = `${API_BASE_URL}upload?room_id=${encodeURIComponent(roomId)}`;
+    const url = buildApiUrl(`${API_BASE_URL}upload?room_id=${encodeURIComponent(roomId)}`);
     xhr.open('POST', url);
-    const token = localStorage.getItem('access_token');
-    if (token) {
-      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    const headers = buildRequestHeaders(undefined);
+    const authHeader = headers.get('Authorization');
+    if (authHeader) {
+      xhr.setRequestHeader('Authorization', authHeader);
     }
     xhr.send(formData);
   });
@@ -169,13 +159,7 @@ export const uploadMultipleMaterials = async (
 
 export const getMaterial = async (materialId: string): Promise<MaterialInfo> => {
   try {
-    const response = await fetch(`${API_BASE_URL}${materialId}`, {
-      headers: getAuthHeaders(),
-    });
-    if (!response.ok) {
-      throw new Error('获取材料失败');
-    }
-    return await response.json();
+    return await requestJson<MaterialInfo>(`${API_BASE_URL}${materialId}`);
   } catch (error: any) {
     message.error(error.message || '获取材料失败');
     throw error;
@@ -192,14 +176,7 @@ export const listMaterials = async (
     if (roomId) params.append('room_id', roomId);
     params.append('skip', String(skip));
     params.append('limit', String(limit));
-
-    const response = await fetch(`${API_BASE_URL}materials?${params}`, {
-      headers: getAuthHeaders(),
-    });
-    if (!response.ok) {
-      throw new Error('获取材料列表失败');
-    }
-    return await response.json();
+    return await requestJson<MaterialInfo[]>(`${API_BASE_URL}materials?${params.toString()}`);
   } catch (error: any) {
     message.error(error.message || '获取材料列表失败');
     throw error;
@@ -210,14 +187,9 @@ export const analyzeMaterial = async (
   materialId: string
 ): Promise<MaterialAnalysisResult> => {
   try {
-    const response = await fetch(`${API_BASE_URL}analyze/${materialId}`, {
+    return await requestJson<MaterialAnalysisResult>(`${API_BASE_URL}analyze/${materialId}`, {
       method: 'POST',
-      headers: getAuthHeaders(),
     });
-    if (!response.ok) {
-      throw new Error('分析材料失败');
-    }
-    return await response.json();
   } catch (error: any) {
     message.error(error.message || '分析材料失败');
     throw error;
@@ -228,18 +200,15 @@ export const batchAnalyzeMaterials = async (
   materialIds: string[]
 ): Promise<{ results: MaterialAnalysisResult[]; total: number; processed: number }> => {
   try {
-    const response = await fetch(`${API_BASE_URL}analyze/batch`, {
+    return await requestJson<{ results: MaterialAnalysisResult[]; total: number; processed: number }>(
+      `${API_BASE_URL}analyze/batch`,
+      {
       method: 'POST',
-      headers: {
-        ...getAuthHeaders(),
-        'Content-Type': 'application/json',
-      },
+      headers: buildRequestHeaders({
+        body: JSON.stringify(materialIds),
+      }),
       body: JSON.stringify(materialIds),
     });
-    if (!response.ok) {
-      throw new Error('批量分析失败');
-    }
-    return await response.json();
   } catch (error: any) {
     message.error(error.message || '批量分析失败');
     throw error;
@@ -252,22 +221,14 @@ export const synthesizeIntent = async (
   contextText?: string
 ): Promise<IntentSynthesisResult> => {
   try {
-    const response = await fetch(`${API_BASE_URL}intent/synthesize`, {
+    return await requestJson<IntentSynthesisResult>(`${API_BASE_URL}intent/synthesize`, {
       method: 'POST',
-      headers: {
-        ...getAuthHeaders(),
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify({
         room_id: roomId,
         materials: materialIds,
         context_text: contextText,
       }),
     });
-    if (!response.ok) {
-      throw new Error('意图综合失败');
-    }
-    return await response.json();
   } catch (error: any) {
     message.error(error.message || '意图综合失败');
     throw error;
@@ -276,9 +237,11 @@ export const synthesizeIntent = async (
 
 export const deleteMaterial = async (materialId: string): Promise<void> => {
   try {
-    const response = await fetch(`${API_BASE_URL}${materialId}`, {
+    const response = await fetch(buildApiUrl(`${API_BASE_URL}${materialId}`), {
       method: 'DELETE',
-      headers: getAuthHeaders(),
+      headers: buildRequestHeaders({
+        method: 'DELETE',
+      }),
     });
     if (!response.ok) {
       throw new Error('删除材料失败');

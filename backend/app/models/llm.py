@@ -16,6 +16,7 @@ class LLMConfig(Base):
     model_name = Column(String(100), nullable=False) # e.g. gpt-4, llama2
     
     is_active = Column(Boolean, default=True)
+    enable_thinking = Column(Boolean, default=False)
     temperature = Column(Float, default=0.7)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())

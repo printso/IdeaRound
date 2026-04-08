@@ -10,6 +10,7 @@ class LLMConfigBase(BaseModel):
     api_base: Optional[str] = None
     model_name: str
     is_active: bool = True
+    enable_thinking: bool = False
     temperature: float = 0.7
 
 class LLMConfigCreate(LLMConfigBase):
@@ -23,6 +24,7 @@ class LLMConfigUpdate(BaseModel):
     api_base: Optional[str] = None
     model_name: Optional[str] = None
     is_active: Optional[bool] = None
+    enable_thinking: Optional[bool] = None
     temperature: Optional[float] = None
 
 class LLMConfigResponse(LLMConfigBase):
@@ -37,3 +39,4 @@ class LLMChatStreamRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     message: str
     system_prompt: Optional[str] = None
+    enable_thinking: bool = False

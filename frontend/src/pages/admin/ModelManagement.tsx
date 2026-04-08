@@ -186,7 +186,12 @@ const ModelManagement: React.FC = () => {
       title: '状态',
       dataIndex: 'is_active',
       key: 'is_active',
-      render: (active: boolean) => <Tag color={active ? 'green' : 'red'}>{active ? '启用' : '停用'}</Tag>,
+      render: (active: boolean, record: LLMConfig) => (
+        <Space>
+          <Tag color={active ? 'green' : 'red'}>{active ? '启用' : '停用'}</Tag>
+          {record.enable_thinking && <Tag color="orange">思考模式</Tag>}
+        </Space>
+      )
     },
     {
       title: '操作',
@@ -257,6 +262,9 @@ const ModelManagement: React.FC = () => {
           </Form.Item>
           <Form.Item name="is_active" label="是否启用" valuePropName="checked" initialValue={true}>
             <Switch />
+          </Form.Item>
+          <Form.Item name="enable_thinking" label="思考模式" valuePropName="checked" initialValue={false}>
+            <Switch checkedChildren="思考" unCheckedChildren="标准" />
           </Form.Item>
         </Form>
       </Modal>

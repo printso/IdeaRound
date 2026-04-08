@@ -49,6 +49,18 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         # await conn.run_sync(Base.metadata.drop_all) # Uncomment to reset DB
         await conn.run_sync(Base.metadata.create_all)
+        # 自动迁移：为已有表添加缺失的列
+        import sqlalchemy as sa
+        from sqlalchemy import inspect as sa_inspect, text as sa_text
+        def _auto_migrate(connection):
+            insp = sa_inspect(connection)
+            if 'llm_configs' in insp.get_table_names():
+                cols = [c['name'] for c in insp.get_columns('llm_configs')]
+                if 'enable_thinking' not in cols:
+                    connection.execute(sa_text(
+                        "ALTER TABLE llm_configs ADD COLUMN enable_thinking TINYINT(1) DEFAULT 0"
+                    ))
+        await conn.run_sync(_auto_migrate)
     app_logger.info("Database tables initialized")
     yield
     app_logger.info("Shutting down IdeaRound API...")

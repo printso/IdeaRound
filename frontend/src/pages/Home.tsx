@@ -1,98 +1,31 @@
-import {
-  Avatar,
-  Button,
-  Card,
-  Col,
-  Divider,
-  Dropdown,
-  Empty,
-  Form,
-  Input,
-  InputNumber,
-  Layout,
-  List,
-  Row,
-  Space,
-  Switch,
-  Select,
-  Tag,
-  Typography,
-  message,
-  Modal,
-  Progress,
-  Tooltip,
-} from 'antd';
-import { RedoOutlined, PlusOutlined, AppstoreAddOutlined } from '@ant-design/icons';
+// Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
+import { Button, Dropdown, Col, Form, Input, Layout, List, Modal, Row, Space, Tag, Typography, message } from 'antd';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+
 import { getLLMConfigs, streamChatByLLMConfig } from '../api/llm';
 import type { LLMConfig } from '../api/llm';
 import AppHeader from '../components/AppHeader';
 import RoundtableCanvas from '../components/RoundtableCanvas';
-import MaterialUploader from '../components/MaterialUploader';
-import MaterialIntentSynthesis from '../components/MaterialIntentSynthesis';
 import type { MaterialInfo } from '../api/material';
 import ConsensusSummary from '../components/ConsensusSummary';
-import {
-  createWorkspace,
-  listWorkspaces,
-  getWorkspace,
-  updateWorkspace,
-  deleteWorkspace,
-  type WorkspaceData,
-} from '../api/workspace';
 import {
   cancelRuntimeTask,
   getRoomRuntimeSnapshot,
   startRoundtableRun,
   streamRuntimeTask,
+  summarizeRoundtableMessages,
   trackRuntimeEvent,
 } from '../api/runtime';
 import { useAuth } from '../contexts/AuthContext';
+import { useWorkspace } from '../hooks/useWorkspace';
+import type { StepKey, RoundtableRoom, IntentCardState, RoleMember, RoundtableStage, JudgeState, BoardDispute } from '../hooks/useWorkspace';
+import { normalizeRoundtableMessage } from '../hooks/useWorkspace';
+import type { WorkspaceData } from '../api/workspace';
+import { createWorkspace, listWorkspaces, getWorkspace, updateWorkspace, deleteWorkspace } from '../api/workspace';
 
 const { Sider, Content, Footer } = Layout;
-const { Paragraph, Text } = Typography;
-
-type IntentCardState = {
-  coreGoal: string;
-  constraints: string;
-  painPoints: string;
-};
-
-type StepKey = 'roundtable' | 'roles' | 'roundtable_view' | 'consensus_summary' | 'canvas_view';
-
-type RoundtableRoom = {
-  id: string;
-  name: string;
-  createdAt: string;
-};
-
-type RoundtableStage = 'brief' | 'final';
-
-type JudgeState = {
-  score: number;
-  reason: string;
-  reached: boolean;
-  consensusCount: number;
-  resolvedPainPoints: number;
-  nextFocus: string;
-  updatedAt?: string;
-};
-
-type BoardDispute = {
-  topic: string;
-  pro: string;
-  con: string;
-};
-
-type ConsensusBoardState = {
-  summary: string;
-  consensus: string[];
-  disputes: BoardDispute[];
-  nextQuestions: string[];
-  updatedAt?: string;
-};
+const { Text } = Typography;
 
 type ProbeOption = {
   id: string;
@@ -111,17 +44,50 @@ type ProbeTurn = {
   content: string;
 };
 
-type RoleMember = {
-  id: string;
-  name: string;
-  stance: '建设' | '对抗' | '中立' | '评审';
-  desc: string;
-  selected: boolean;
-  soulConfig?: string;  // 灵魂配置长文本
-};
+type ReplyViewMode = 'compact' | 'detailed';
+
+const getReplyViewModeStorageKey = (userId?: number) => `idearound_reply_view_mode_${userId ?? 'guest'}`;
+
+
+
+
+
+
+
+import { StepDemandRecognition } from './home/StepDemandRecognition';
+import { StepRoleMatrix } from './home/StepRoleMatrix';
+import { StepRoundtableView } from './home/StepRoundtableView';
+import { RoleModals } from './home/RoleModals';
+
+import { ExpertModeConfig } from './home/ExpertModeConfig';
 
 function Home() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
+  const { state: workspaceState, actions: _workspaceActions } = useWorkspace();
+  const {
+    step, setStep,
+    roomId, setRoomId,
+    roomReady, setRoomReady,
+    roundtableRooms, setRoundtableRooms,
+    initialDemand, setInitialDemand,
+    intentCard, setIntentCard,
+    intentReady, setIntentReady,
+    roles, setRoles,
+    rolesReady, setRolesReady,
+    systemPrompt, setSystemPrompt,
+    expectedResult, setExpectedResult,
+    selectedModelId, setSelectedModelId,
+    messages, setMessages,
+    roundtableStage, setRoundtableStage,
+    maxDialogueRounds, setMaxDialogueRounds,
+    autoRoundCount, setAutoRoundCount,
+    judgeState, setJudgeState,
+    consensusBoard, setConsensusBoard,
+    canvasConsensus, setCanvasConsensus,
+    canvasDisputes, setCanvasDisputes,
+    canvasUpdatedAt, setCanvasUpdatedAt,
+    canvasSnapshot, setCanvasSnapshot,
+  } = workspaceState;
 
   // 添加自定义样式用于列表项hover效果和菜单
   const listItemStyle = `
@@ -176,95 +142,44 @@ function Home() {
     .roundtable-list-item.selected .roundtable-settings-button:hover {
       background-color: rgba(22, 119, 255, 0.1);
     }
-  `;
-
-  // localStorage key
-  const STORAGE_KEY = 'idearound_workspace';
-
-  // 从 localStorage 加载保存的状态（作为 fallback）
-  const loadSavedState = () => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        return JSON.parse(saved);
-      }
-    } catch (e) {
-      console.error('加载保存的状态失败:', e);
+    .roundtable-reply-content {
+      transition: opacity 0.18s ease, transform 0.18s ease;
+      opacity: 1;
+      transform: translateY(0);
     }
-    return null;
-  };
-
-  const savedState = loadSavedState();
+  `;
 
   const [models, setModels] = useState<LLMConfig[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
-  const [selectedModelId, setSelectedModelId] = useState<number | undefined>(savedState?.selectedModelId || undefined);
-  const [step, setStep] = useState<StepKey>(savedState?.step || 'roundtable');
-  const [initialDemand, setInitialDemand] = useState(savedState?.initialDemand || '');
   const [probeQuestions, setProbeQuestions] = useState<ProbeQuestion[]>([]);
   const [probeTurns, setProbeTurns] = useState<ProbeTurn[]>([]);
-  const [intentCard, setIntentCard] = useState<IntentCardState>(savedState?.intentCard || {
-    coreGoal: '',
-    constraints: '',
-    painPoints: '',
-  });
-  const [intentReady, setIntentReady] = useState(savedState?.intentReady || false);
-  const [roles, setRoles] = useState<RoleMember[]>(savedState?.roles || []);
-  const [rolesReady, setRolesReady] = useState(savedState?.rolesReady || false);
+  
   const [roleTemplates, setRoleTemplates] = useState<{id: number; name: string; stance: string; description?: string; soul_config?: string; is_active?: boolean; is_default?: boolean; skill_tags?: string[]; category?: string}[]>([]);
   const [scenarioTemplates, setScenarioTemplates] = useState<{id: number; name: string; description?: string; preset_roles: number[]; system_prompt_override?: string; is_active: boolean}[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<Record<string, string>>({});
-  const [roomReady, setRoomReady] = useState(savedState?.roomReady || false);
-  const [roomId, setRoomId] = useState(savedState?.roomId || '');
+  
   const [autoBrainstorm, setAutoBrainstorm] = useState(true);
-  const [systemPrompt, setSystemPrompt] = useState(savedState?.systemPrompt || '');
   const [userPrompt, setUserPrompt] = useState('');
   const [sending, setSending] = useState(false);
-  const [messages, setMessages] = useState<
-    {
-      id: string;
-      speakerId: string;
-      speakerName: string;
-      speakerType: 'user' | 'agent';
-      content: string;
-      streaming?: boolean;
-      createdAt: string;
-    }[]
-  >(savedState?.messages || []);
-  const [canvasConsensus, setCanvasConsensus] = useState<string[]>(savedState?.canvasConsensus || []);
-  const [canvasDisputes, setCanvasDisputes] = useState<string[]>(savedState?.canvasDisputes || []);
-  const [canvasUpdatedAt, setCanvasUpdatedAt] = useState(savedState?.canvasUpdatedAt || '');
-  const [roundtableRooms, setRoundtableRooms] = useState<RoundtableRoom[]>(savedState?.roundtableRooms || []);
+  const [replyViewMode, setReplyViewMode] = useState<ReplyViewMode>(() => {
+    try {
+      const cachedMode = localStorage.getItem(getReplyViewModeStorageKey());
+      return cachedMode === 'detailed' ? 'detailed' : 'compact';
+    } catch {
+      return 'compact';
+    }
+  });
+  const [expandedMessageIds, setExpandedMessageIds] = useState<string[]>([]);
   const [backendWorkspaceIds, setBackendWorkspaceIds] = useState<Set<string>>(new Set());
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
-  const [roundtableStage, setRoundtableStage] = useState<RoundtableStage>(savedState?.roundtableStage || 'brief');
   const [pendingRoundtableRun, setPendingRoundtableRun] = useState<{ roomId: string; text: string; stage: RoundtableStage; trigger?: 'user' | 'host'; systemPrompt?: string } | null>(null);
-  const [expectedResult, setExpectedResult] = useState(savedState?.expectedResult || '');
   const [uploadedMaterials, setUploadedMaterials] = useState<MaterialInfo[]>([]);
   const [preUploadRoomId] = useState<string>(`pre_${Date.now().toString(36)}`);
   const [generatingExpectedResult, setGeneratingExpectedResult] = useState(false);
-  const [maxDialogueRounds, setMaxDialogueRounds] = useState<number>(savedState?.maxDialogueRounds || 6);
-  const [autoRoundCount, setAutoRoundCount] = useState<number>(savedState?.autoRoundCount || 0);
   const [autoConversationEnabled, setAutoConversationEnabled] = useState(true);
-  const [judgeScore, setJudgeScore] = useState<number>(savedState?.judgeState?.score || 0);
-  const [judgeReason, setJudgeReason] = useState<string>(savedState?.judgeState?.reason || '');
-  const [judgeState, setJudgeState] = useState<JudgeState>({
-    score: savedState?.judgeState?.score || 0,
-    reason: savedState?.judgeState?.reason || '',
-    reached: savedState?.judgeState?.reached || false,
-    consensusCount: savedState?.judgeState?.consensusCount || 0,
-    resolvedPainPoints: savedState?.judgeState?.resolvedPainPoints || 0,
-    nextFocus: savedState?.judgeState?.nextFocus || '',
-    updatedAt: savedState?.judgeState?.updatedAt,
-  });
-  const [consensusBoard, setConsensusBoard] = useState<ConsensusBoardState>({
-    summary: savedState?.consensusBoard?.summary || '',
-    consensus: savedState?.consensusBoard?.consensus || [],
-    disputes: savedState?.consensusBoard?.disputes || [],
-    nextQuestions: savedState?.consensusBoard?.nextQuestions || [],
-    updatedAt: savedState?.consensusBoard?.updatedAt,
-  });
-  const [canvasSnapshot, setCanvasSnapshot] = useState<Record<string, unknown> | null>(savedState?.canvasSnapshot || null);
+  const [judgeScore, setJudgeScore] = useState<number>(judgeState.score);
+  const [judgeReason, setJudgeReason] = useState<string>(judgeState.reason);
+  
   const [runtimePendingTasks, setRuntimePendingTasks] = useState(0);
   const [customProbeOptions, setCustomProbeOptions] = useState<Record<string, string>>({});
   const [editingSoulConfigRole, setEditingSoulConfigRole] = useState<RoleMember | null>(null);
@@ -284,6 +199,8 @@ function Home() {
   const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasLoadedInitialDataRef = useRef(false);
   const backendWorkspaceIdsRef = useRef<Set<string>>(new Set());  // 避免闭包问题
+  const pendingSummaryIdsRef = useRef<Set<string>>(new Set());
+  const trackedReplyModeKeyRef = useRef<string>('');
   const [form] = Form.useForm();
 
   // 生成基于意图洞察的摘要标题
@@ -391,34 +308,32 @@ function Home() {
     }
   };
 
-  const collectModelText = useCallback(async (prompt: string, systemPromptText: string) => {
-    if (!selectedModelId) {
-      return '';
-    }
-    let output = '';
-    let done = false;
-    await streamChatByLLMConfig(
-      selectedModelId,
-      {
-        message: prompt,
-        system_prompt: systemPromptText,
-      },
-      {
-        onDelta: (delta) => {
-          output += delta;
+  const collectModelText = useCallback((prompt: string, systemPromptText: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      if (!selectedModelId) {
+        resolve('');
+        return;
+      }
+      let output = '';
+      streamChatByLLMConfig(
+        selectedModelId,
+        {
+          message: prompt,
+          system_prompt: systemPromptText,
         },
-        onDone: () => {
-          done = true;
+        {
+          onDelta: (delta) => {
+            output += delta;
+          },
+          onDone: () => {
+            resolve(output.trim());
+          },
+          onError: (error) => {
+            reject(error);
+          },
         },
-        onError: () => {
-          done = true;
-        },
-      },
-    );
-    if (!done) {
-      return output.trim();
-    }
-    return output.trim();
+      ).catch(reject);
+    });
   }, [selectedModelId]);
 
   const parseJsonObject = (text: string) => {
@@ -506,27 +421,36 @@ function Home() {
 
     const nextMessages = Array.isArray(payload.messages) ? payload.messages : [];
     if (nextMessages.length > 0) {
-      setMessages(
-        nextMessages.map((msg) => {
-          const item = msg as Record<string, unknown>;
-          return {
-            id: String(item.id || ''),
-            speakerId: String(item.speaker_id || item.speakerId || ''),
-            speakerName: String(item.speaker_name || item.speakerName || ''),
-            speakerType: (item.speaker_type || item.speakerType || 'agent') as 'user' | 'agent',
-            content: String(item.content || ''),
-            streaming: Boolean(item.streaming),
-            createdAt: String(item.created_at || item.createdAt || ''),
-          };
-        }),
-      );
+      setMessages(() => {
+        // We want to avoid replacing the user's immediate input with an older snapshot
+        // when the stream just starts. But the backend's stream is the source of truth
+        // for agent messages.
+        const normalized = nextMessages.map((msg) => normalizeRoundtableMessage(msg as Record<string, unknown>));
+        
+        // Let's do a simple optimization: if the new messages are exactly the same 
+        // length as prev, and nothing is streaming, we might not need to update.
+        // But for safety and simplicity, we just take the backend's state as it's
+        // continually streaming updates.
+        return normalized;
+      });
     }
 
-    applyJudgeResult((payload.judge_state as Record<string, unknown> | undefined) || null);
-    applyBoardResult((payload.consensus_board as Record<string, unknown> | undefined) || null);
-    setCanvasConsensus(Array.isArray(payload.canvas_consensus) ? payload.canvas_consensus as string[] : []);
-    setCanvasDisputes(Array.isArray(payload.canvas_disputes) ? payload.canvas_disputes as string[] : []);
+    if (payload.judge_state) {
+      applyJudgeResult((payload.judge_state as Record<string, unknown> | undefined) || null);
+    }
+    if (payload.consensus_board) {
+      applyBoardResult((payload.consensus_board as Record<string, unknown> | undefined) || null);
+    }
+    
+    if (Array.isArray(payload.canvas_consensus)) {
+      setCanvasConsensus(payload.canvas_consensus as string[]);
+    }
+    if (Array.isArray(payload.canvas_disputes)) {
+      setCanvasDisputes(payload.canvas_disputes as string[]);
+    }
+    
     setCanvasUpdatedAt(new Date().toLocaleString());
+    
     if (payload.stage === 'brief' || payload.stage === 'final') {
       setRoundtableStage(payload.stage);
     }
@@ -613,7 +537,7 @@ function Home() {
     setInitialDemand(data.initial_demand);
     setIntentCard(data.intent_card);
     setIntentReady(data.intent_ready);
-    setRoles(data.roles.map(role => ({
+    setRoles(data.roles.map((role: any) => ({
       id: role.id,
       name: role.name,
       stance: role.stance as '建设' | '对抗' | '中立' | '评审',
@@ -625,15 +549,7 @@ function Home() {
     setRoomReady(data.room_ready);
     setRoomId(data.room_id);
     setSystemPrompt(data.system_prompt);
-    setMessages(data.messages.map(msg => ({
-      id: msg.id,
-      speakerId: (msg.speaker_id || msg.speakerId) as string,
-      speakerName: (msg.speaker_name || msg.speakerName) as string,
-      speakerType: (msg.speaker_type || msg.speakerType) as 'user' | 'agent',
-      content: msg.content,
-      streaming: msg.streaming ?? false,
-      createdAt: (msg.created_at || msg.createdAt) as string,
-    })));
+    setMessages(data.messages.map((msg: any) => normalizeRoundtableMessage(msg as unknown as Record<string, unknown>)));
     setCanvasConsensus(data.canvas_consensus);
     setCanvasDisputes(data.canvas_disputes);
     setCanvasUpdatedAt(data.canvas_updated_at);
@@ -694,6 +610,8 @@ function Home() {
           speaker_name: msg.speakerName,
           speaker_type: msg.speakerType,
           content: msg.content,
+          summary: msg.summary,
+          summary_metrics: msg.summaryMetrics,
           streaming: msg.streaming,
           created_at: msg.createdAt,
         })),
@@ -742,6 +660,103 @@ function Home() {
       console.error('保存工作台到后端失败:', error);
     }
   }, [autoRoundCount, canvasConsensus, canvasDisputes, canvasSnapshot, canvasUpdatedAt, consensusBoard, expectedResult, initialDemand, intentCard, isAuthenticated, judgeState, maxDialogueRounds, messages, roles, rolesReady, roomId, roomReady, roundtableRooms, roundtableStage, selectedModelId, step, systemPrompt, intentReady]);
+
+  const handleReplyViewModeChange = useCallback((mode: ReplyViewMode) => {
+    setReplyViewMode(mode);
+    setExpandedMessageIds([]);
+    try {
+      localStorage.setItem(getReplyViewModeStorageKey(user?.id), mode);
+    } catch (error) {
+      console.error('缓存回复展示模式失败:', error);
+    }
+    if (user?.id) {
+      void trackRuntimeEvent({
+        room_id: roomId || undefined,
+        user_id: user.id,
+        event_type: 'ui.reply_view_mode.changed',
+        event_payload: {
+          mode,
+          room_ready: roomReady,
+        },
+      }).catch((error) => console.error('记录回复展示切换失败:', error));
+    }
+  }, [roomId, roomReady, user?.id]);
+
+  const toggleExpandedMessage = useCallback((messageId: string) => {
+    setExpandedMessageIds((prev) =>
+      prev.includes(messageId) ? prev.filter((id) => id !== messageId) : [...prev, messageId],
+    );
+  }, []);
+
+  const requestMissingSummaries = useCallback(async () => {
+    if (!selectedModelId) {
+      return;
+    }
+
+    const targets = messages.filter(
+      (msg) =>
+        msg.speakerType === 'agent' &&
+        !msg.summary?.trim() &&
+        msg.summaryStatus !== 'loading' &&
+        !pendingSummaryIdsRef.current.has(msg.id),
+    );
+
+    if (targets.length === 0) {
+      return;
+    }
+
+    const targetIds = new Set(targets.map((msg) => msg.id));
+    targets.forEach((msg) => pendingSummaryIdsRef.current.add(msg.id));
+    setMessages((prev) =>
+      prev.map((msg) => (targetIds.has(msg.id) ? { ...msg, summaryStatus: 'loading' } : msg)),
+    );
+
+    try {
+      const response = await summarizeRoundtableMessages({
+        room_id: roomId || undefined,
+        model_id: selectedModelId,
+        messages: targets.map((msg) => ({
+          id: msg.id,
+          speaker_id: msg.speakerId,
+          speaker_name: msg.speakerName,
+          speaker_type: msg.speakerType,
+          content: msg.content,
+          summary: msg.summary,
+          summary_metrics: msg.summaryMetrics ?? undefined,
+          created_at: msg.createdAt,
+          streaming: msg.streaming,
+        })),
+      });
+      const summaryById = new Map(response.items.map((item) => [item.message_id, item]));
+      setMessages((prev) =>
+        prev.map((msg) => {
+          const summaryItem = summaryById.get(msg.id);
+          if (!summaryItem) {
+            return targetIds.has(msg.id) ? { ...msg, summaryStatus: 'failed' } : msg;
+          }
+          return {
+            ...msg,
+            summary: summaryItem.summary,
+            summaryStatus: 'ready',
+            summaryMetrics: {
+              ...(msg.summaryMetrics || {}),
+              duration_ms: summaryItem.duration_ms,
+              semantic_consistency: summaryItem.semantic_consistency,
+              meets_rt_target: summaryItem.meets_rt_target,
+              summary_length: summaryItem.summary.length,
+            },
+          };
+        }),
+      );
+    } catch (error) {
+      console.error('生成消息摘要失败:', error);
+      setMessages((prev) =>
+        prev.map((msg) => (targetIds.has(msg.id) ? { ...msg, summaryStatus: 'failed' } : msg)),
+      );
+    } finally {
+      targetIds.forEach((id) => pendingSummaryIdsRef.current.delete(id));
+    }
+  }, [messages, roomId, selectedModelId]);
 
   const loadModels = async () => {
     setLoadingModels(true);
@@ -884,7 +899,7 @@ function Home() {
 
     // 保存到 localStorage（作为 fallback）
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
+      localStorage.setItem('idearound_workspace', JSON.stringify(stateToSave));
     } catch (e) {
       console.error('保存状态失败:', e);
     }
@@ -937,6 +952,43 @@ function Home() {
   useEffect(() => {
     backendWorkspaceIdsRef.current = backendWorkspaceIds;
   }, [backendWorkspaceIds]);
+
+  useEffect(() => {
+    const cachedMode = (() => {
+      try {
+        const value = localStorage.getItem(getReplyViewModeStorageKey(user?.id));
+        return value === 'detailed' ? 'detailed' : 'compact';
+      } catch {
+        return 'compact';
+      }
+    })();
+    setReplyViewMode(cachedMode);
+    setExpandedMessageIds([]);
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      return;
+    }
+    const trackingKey = `${user.id}:${replyViewMode}`;
+    if (trackedReplyModeKeyRef.current === trackingKey) {
+      return;
+    }
+    trackedReplyModeKeyRef.current = trackingKey;
+    void trackRuntimeEvent({
+      room_id: roomId || undefined,
+      user_id: user.id,
+      event_type: 'ui.reply_view_mode.applied',
+      event_payload: {
+        mode: replyViewMode,
+        source: 'cached_or_default',
+      },
+    }).catch((error) => console.error('记录回复展示模式失败:', error));
+  }, [replyViewMode, roomId, user?.id]);
+
+  useEffect(() => {
+    void requestMissingSummaries();
+  }, [requestMissingSummaries]);
 
   useEffect(() => {
     form.setFieldsValue(intentCard);
@@ -1114,48 +1166,89 @@ ${JSON.stringify(roleCandidates, null, 2)}
     setAutoRoundCount(0);
     setAutoConversationEnabled(true);
     
-    // 如果没有开启高级模式，则通过 AI 主持人静默抽取意图，不再显示繁琐的问卷
+    // 如果没有开启高级模式，则通过 AI 主持人一次性静默抽取意图、期望结果和角色阵型
     if (!isExpertMode) {
-      const loadingMsg = message.loading('AI主持人正在分析您的需求并组建圆桌...', 0);
+      const loadingMsg = message.loading('AI主持人正在分析需求并组建圆桌...', 0);
       try {
         const materialContent = uploadedMaterials.length > 0 
           ? `附件材料摘要：${uploadedMaterials.map(m => m.summary || m.filename).join(';')}` 
           : '';
-        const fullDemand = `${initialDemand}\n${materialContent}`;
+        const fullDemand = `${initialDemand}
+${materialContent}`;
 
-        const prompt = `你是一位经验丰富的"需求分析师"。请根据用户的初始输入，提炼出圆桌讨论所需的结构化意图卡片。
-请严格输出 JSON 格式，不要包含任何其他文字：
+        const roleCandidates = roleTemplates
+          .filter((tpl) => tpl.is_active !== false)
+          .map((tpl) => ({
+            id: tpl.id,
+            name: tpl.name,
+            stance: tpl.stance,
+            description: tpl.description || '',
+          }));
+
+        const prompt = `你是一位"需求分析师"与"圆桌讨论角色配置专家"。
+请根据用户的初始输入，提炼出圆桌讨论所需的结构化意图卡片、期望结果，并从候选角色列表中选择最适合参与讨论的 3-6 个角色。
+
+【用户输入】
+${fullDemand}
+
+【候选角色列表】
+${JSON.stringify(roleCandidates, null, 2)}
+
+【要求】
+1. 意图需简明扼要；期望结果不超过120字。
+2. 选择的角色必须覆盖不同立场（建设、对抗/评审）。
+3. 严格输出 JSON 格式，不要包含任何其他文字：
 {
   "coreGoal": "核心目标（不超过30个字）",
-  "constraints": "限制条件（如果有，简明扼要；如果没有填无）",
-  "painPoints": "核心痛点（如果有，简明扼要；如果没有填无）"
-}
+  "constraints": "限制条件（简明扼要；无则填无）",
+  "painPoints": "核心痛点（简明扼要；无则填无）",
+  "expectedResult": "期望结果",
+  "roleIds": [1, 5, 8]
+}`;
 
-用户输入：${fullDemand}`;
-
-        const rawJson = await collectModelText(prompt, '你是一个专业的 JSON 数据提取机器人，只输出合法的 JSON');
-        const intentData = parseJsonObject(rawJson);
+        const rawJson = await collectModelText(prompt, '你是一个专业的 JSON 提取机器人，只输出合法的 JSON');
+        const parsedData = parseJsonObject(rawJson);
         
-        if (intentData) {
+        if (parsedData) {
           const newIntent = {
-            coreGoal: intentData.coreGoal || initialDemand.slice(0, 20),
-            constraints: intentData.constraints || '无',
-            painPoints: intentData.painPoints || '无'
+            coreGoal: parsedData.coreGoal || initialDemand.slice(0, 20),
+            constraints: parsedData.constraints || '无',
+            painPoints: parsedData.painPoints || '无'
           };
           setIntentCard(newIntent);
           
-          // 如果用户没有选择具体场景模板，系统默认选出一个包含建设/对抗/评审的通用组合
-          // 这里简化处理：直接自动跳到角色确认步骤，并根据模板自动生成
+          let selectedRoles: RoleMember[] = [];
+          if (Array.isArray(parsedData.roleIds) && parsedData.roleIds.length > 0) {
+            selectedRoles = roleTemplates
+              .filter((tpl) => parsedData.roleIds.includes(tpl.id))
+              .map((tpl) => ({
+                id: `role_${tpl.id}`,
+                name: tpl.name,
+                stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+                desc: tpl.description || '',
+                selected: true,
+                soulConfig: tpl.soul_config,
+              }));
+          }
+          
+          if (selectedRoles.length === 0) {
+            selectedRoles = roleTemplates
+              .filter((tpl) => tpl.is_default)
+              .slice(0, 5)
+              .map((tpl) => ({
+                id: `role_${tpl.id}`,
+                name: tpl.name,
+                stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+                desc: tpl.description || '',
+                selected: true,
+                soulConfig: tpl.soul_config,
+              }));
+          }
+
+          setRoles(selectedRoles);
+          setExpectedResult(parsedData.expectedResult || `围绕「${newIntent.coreGoal}」形成可执行方案`);
           setIntentReady(true);
           setStep('roles');
-          
-          // 使用 AI 智能匹配角色
-          const generatedRoles = await generateRolesByIntentWithAI(newIntent, roleTemplates);
-          setRoles(generatedRoles);
-          
-          // 可以在这里自动生成预期结果
-          const generatedResult = await generateExpectedResultByIntent(newIntent);
-          setExpectedResult(generatedResult);
 
           loadingMsg();
           message.success('需求分析完毕，AI 已为您智能匹配专业角色阵型');
@@ -1425,15 +1518,6 @@ ${JSON.stringify(roleCandidates, null, 2)}
     setTemplatePickerVisible(false);
   };
 
-  const deleteRole = (roleId: string) => {
-    const role = roles.find((r) => r.id === roleId);
-    if (role?.id === 'pm' || role?.id === 'arch' || role?.id === 'ops' || role?.id === 'risk' || role?.id === 'audit') {
-      message.warning('默认角色不能删除');
-      return;
-    }
-    setRoles((prev) => prev.filter((r) => r.id !== roleId));
-    message.success(`已删除角色：${role?.name}`);
-  };
 
   const confirmRoles = async () => {
     // 防止重复提交
@@ -1752,6 +1836,8 @@ ${JSON.stringify(roleCandidates, null, 2)}
         speakerName: optimisticSpeakerName,
         speakerType: 'user' as const,
         content: userText,
+        summary: userText,
+        summaryStatus: 'ready' as const,
         createdAt: new Date().toLocaleTimeString(),
       },
     ];
@@ -1792,6 +1878,8 @@ ${JSON.stringify(roleCandidates, null, 2)}
           speaker_name: msg.speakerName,
           speaker_type: msg.speakerType,
           content: msg.content,
+          summary: msg.summary,
+          summary_metrics: msg.summaryMetrics,
           created_at: msg.createdAt,
           streaming: false,
         })),
@@ -1975,7 +2063,7 @@ ${JSON.stringify(roleCandidates, null, 2)}
                               key: 'edit',
                               label: '编辑空间名称',
                               icon: <span style={{ fontSize: 12, color: '#1677ff' }}>✏️</span>,
-                              onClick: (e) => {
+                              onClick: (e: any) => {
                                 e.domEvent.stopPropagation();
                                 const mouseEvent = e.domEvent as React.MouseEvent;
                                 startEditingRoomName(room.id, mouseEvent);
@@ -1986,7 +2074,7 @@ ${JSON.stringify(roleCandidates, null, 2)}
                               label: '删除空间',
                               icon: <span style={{ fontSize: 12, color: '#ff4d4f' }}>🗑️</span>,
                               danger: true,
-                              onClick: (e) => {
+                              onClick: (e: any) => {
                                 e.domEvent.stopPropagation();
                                 const mouseEvent = e.domEvent as React.MouseEvent;
                                 deleteRoundtableRoom(room.id, mouseEvent);
@@ -2089,606 +2177,166 @@ ${JSON.stringify(roleCandidates, null, 2)}
 
         <Layout style={{ background: '#f5f5f5', overflow: 'hidden' }}>
           <Content style={{ padding: 16, flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            {step === 'roundtable' && (
-              <Row gutter={16} justify={isExpertMode ? 'start' : 'center'}>
-                <Col xs={24} xl={isExpertMode ? 14 : 16}>
-                  <Card title="需求识别交互" style={{ borderRadius: 8 }}>
-                    <div style={{ maxHeight: 'calc(100dvh - 64px - 140px)', overflowY: 'auto', paddingRight: 8 }}>
-                      <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                        <Input.TextArea
-                          rows={3}
-                          value={initialDemand}
-                          onChange={(e) => setInitialDemand(e.target.value)}
-                          placeholder="请简要描述你的需求（一句话，或直接上传文档）"
-                        />
-                        <MaterialUploader
-                          roomId={roomId || preUploadRoomId}
-                          onMaterialsAnalyzed={handleMaterialsAnalyzed}
-                          maxFiles={10}
-                        />
-
-                        {uploadedMaterials.length > 0 && (
-                          <MaterialIntentSynthesis
-                            roomId={roomId || preUploadRoomId}
-                            materials={uploadedMaterials}
-                            onIntentSynthesized={(result) => {
-                              if (result.synthesized_intent.core_goal && !intentCard.coreGoal) {
-                                setIntentCard(prev => ({
-                                  ...prev,
-                                  coreGoal: result.synthesized_intent.core_goal,
-                                  constraints: result.synthesized_intent.constraints || prev.constraints,
-                                  painPoints: result.synthesized_intent.pain_points || prev.painPoints,
-                                }));
-                              }
-                            }}
-                          />
-                        )}
-
-                        <Divider style={{ margin: '12px 0' }} />
-
-                        <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                          <Button 
-                            type="primary" 
-                            size="large" 
-                            block 
-                            onClick={startIntentProbing}
-                            style={{ height: 48, fontSize: 16, borderRadius: 8 }}
-                          >
-                            {isExpertMode ? '开始深度洞察 (多轮问答)' : '✨ 智能分析需求并组建团队'}
-                          </Button>
-
-                          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                            <Button 
-                              type="link"
-                              onClick={() => {
-                                const sampleContent = `“小秘”：你的隐私优先、全感官个人 AI 管家\n核心理念：将碎片信息转化为有序智慧，打造属于你的“数字第二大脑”。\n• 零门槛全能录入：支持语音、截图、文档、即时消息等 8 种媒介，随手拍、随口说、随心存，彻底打破应用间的“信息孤岛”。\n• 隐私主权架构：坚持“本地优先”，所有 RAG 索引与数据库均存于本地，支持端侧轻量化运行。你的数据，只有你拥有。\n• 反焦虑缓冲机制：首创“收件箱缓冲区”，AI 解析的内容需经你确认才进入日程或知识库，拒绝任务堆积，维护生活的秩序感。\n• 情境感知助手：它懂你的节奏。平日里它是静默的守门人，在开会前或关键时刻，它会精准推送关联文档与任务汇总，化碎片为行动。`;
-                                setInitialDemand(sampleContent);
-                              }}
-                            >
-                              加载示例输入
-                            </Button>
-                            <Space>
-                              <Switch checked={isExpertMode} onChange={setIsExpertMode} />
-                              <Text>高级模式 (自定义探针、角色与结构化意图)</Text>
-                            </Space>
-                          </Space>
-                        </Space>
-
-                        {/* 场景模板快捷入口 */}
-                        {scenarioTemplates.length > 0 && (
-                          <div style={{ marginTop: 16, padding: '16px', background: '#fafafa', borderRadius: 8 }}>
-                            <Text strong style={{ display: 'block', marginBottom: 12 }}>或使用场景模板一键上桌：</Text>
-                            <Space wrap>
-                              {scenarioTemplates.filter(t => t.is_active).map(template => (
-                                <Button 
-                                  key={template.id} 
-                                  onClick={() => selectScenarioTemplate(template.id)}
-                                  disabled={!initialDemand.trim() && uploadedMaterials.length === 0}
-                                  title={(!initialDemand.trim() && uploadedMaterials.length === 0) ? "请先输入需求或上传资料" : template.description}
-                                >
-                                  {template.name}
-                                </Button>
-                              ))}
-                            </Space>
-                          </div>
-                        )}
-                      </Space>
-                      {isExpertMode && (
-                        <>
-                          <Divider style={{ margin: '16px 0' }} />
-                          <Space style={{ marginBottom: 16 }}>
-                            <Button
-                              onClick={() => {
-                                setProbeQuestions([]);
-                                setProbeTurns([]);
-                                setIntentCard({ coreGoal: '', constraints: '', painPoints: '' });
-                                setExpectedResult('');
-                                setAutoRoundCount(0);
-                                setIntentReady(false);
-                                setRolesReady(false);
-                                setRoomReady(false);
-                                setRoles([]);
-                                setMessages([]);
-                                setCanvasConsensus([]);
-                                setCanvasDisputes([]);
-                                setCanvasUpdatedAt('');
-                                form.resetFields();
-                              }}
-                            >
-                              重置分析状态
-                            </Button>
-                          </Space>
-                          {probeTurns.length === 0 && <Empty description="输入需求后点击「开始洞察」，系统将提出澄清问题并生成需求卡片" />}
-                          {probeTurns.length > 0 && (
-                            <List
-                              dataSource={probeTurns}
-                              renderItem={(item) => (
-                                <List.Item style={{ border: 'none', padding: '6px 0' }}>
-                                  <Space align="start">
-                                    <Avatar style={{ background: item.role === 'user' ? '#1677ff' : '#52c41a' }}>
-                                      {item.role === 'user' ? '我' : '问'}
-                                    </Avatar>
-                                    <Card size="small" style={{ width: '100%' }}>
-                                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
-                                    </Card>
-                                  </Space>
-                                </List.Item>
-                              )}
-                            />
-                          )}
-                          {probeQuestions.length > 0 && (
-                            <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                              {probeQuestions.map((q) => (
-                                <Card key={q.id} size="small" title={q.question}>
-                                  <Space wrap>
-                                    {q.options.map((opt) => (
-                                      <Button key={opt.id} onClick={() => applyProbeAnswer(q.id, opt.label)}>
-                                        {opt.label}
-                                      </Button>
-                                    ))}
-                                    <Input
-                                      key={`input-${q.id}`}
-                                      placeholder="其他（请输入）"
-                                      style={{ width: 200 }}
-                                      value={customProbeOptions[q.id] || ''}
-                                      onChange={(e) => setCustomProbeOptions({ ...customProbeOptions, [q.id]: e.target.value })}
-                                      onPressEnter={() => {
-                                        const customValue = customProbeOptions[q.id]?.trim();
-                                        if (customValue) {
-                                          applyProbeAnswer(q.id, customValue);
-                                          setCustomProbeOptions({ ...customProbeOptions, [q.id]: '' });
-                                        }
-                                      }}
-                                    />
-                                    <Button
-                                      key={`add-${q.id}`}
-                                      onClick={() => {
-                                        const customValue = customProbeOptions[q.id]?.trim();
-                                        if (customValue) {
-                                          applyProbeAnswer(q.id, customValue);
-                                          setCustomProbeOptions({ ...customProbeOptions, [q.id]: '' });
-                                        }
-                                      }}
-                                    >
-                                      添加
-                                    </Button>
-                                  </Space>
-                                </Card>
-                              ))}
-                            </Space>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </Card>
-                </Col>
-                {isExpertMode && (
-                <Col xs={24} xl={10}>
-                  <Card title="高级配置与结构化需求" style={{ borderRadius: 8 }}>
-                    <div style={{ maxHeight: 'calc(100dvh - 64px - 140px)', overflowY: 'auto', paddingRight: 8 }}>
-                      <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                        <Card type="inner" title="全局配置" style={{ borderRadius: 8 }}>
-                          <Space direction="vertical" style={{ width: '100%' }}>
-                            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                              <Text type="secondary">模型选择</Text>
-                              <Select
-                                style={{ width: 200 }}
-                                value={selectedModelId}
-                                onChange={setSelectedModelId}
-                                options={models.map((m) => ({ value: m.id, label: m.name }))}
-                                loading={loadingModels}
-                                placeholder="请选择大模型"
-                              />
-                            </Space>
-                            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                              <Text type="secondary">全局提示词 (System Prompt)</Text>
-                              <Button type="link" size="small" onClick={() => setSystemPrompt(promptTemplates.prompt_base || '')}>重置默认</Button>
-                            </Space>
-                            <Input.TextArea
-                              rows={4}
-                              value={systemPrompt}
-                              onChange={(e) => setSystemPrompt(e.target.value)}
-                              placeholder="可选：输入全局系统提示词，这将影响所有角色的行为"
-                            />
-                          </Space>
-                        </Card>
-                        <Card type="inner" title="期望结果" style={{ borderRadius: 8 }}>
-                          <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                            <Input.TextArea
-                              rows={4}
-                              value={expectedResult}
-                              onChange={(e) => setExpectedResult(e.target.value)}
-                              placeholder="填写希望这次圆桌讨论最终达到的结果。可由AI基于意图洞察自动生成，再手动微调。"
-                            />
-                            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                              <Button
-                                loading={generatingExpectedResult}
-                                onClick={async () => {
-                                  const values = await form.validateFields();
-                                  setGeneratingExpectedResult(true);
-                                  try {
-                                    const generated = await generateExpectedResultByIntent(values as IntentCardState);
-                                    setExpectedResult(generated);
-                                    message.success('已生成期望结果');
-                                  } finally {
-                                    setGeneratingExpectedResult(false);
-                                  }
-                                }}
-                              >
-                                AI生成期望结果
-                              </Button>
-                              <Space>
-                                <Text type="secondary">对话轮数上限</Text>
-                                <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => setMaxDialogueRounds(Number(v || 6))} />
-                              </Space>
-                            </Space>
-                          </Space>
-                        </Card>
-                        <Card type="inner" title="结构化需求卡片（可编辑）" style={{ borderRadius: 8 }}>
-                          <Form
-                            form={form}
-                            layout="vertical"
-                            initialValues={intentCard}
-                            onValuesChange={(_, values) => setIntentCard(values as IntentCardState)}
-                          >
-                            <Form.Item
-                              name="coreGoal"
-                              label="核心目标"
-                              rules={[{ required: true, message: '请填写核心目标' }]}
-                            >
-                              <Input placeholder="例：在两周内验证产品方向并形成可执行方案" />
-                            </Form.Item>
-                            <Form.Item name="constraints" label="限制条件">
-                              <Input placeholder="例：预算有限；人手少；需合规" />
-                            </Form.Item>
-                            <Form.Item name="painPoints" label="待解决痛点">
-                              <Input placeholder="例：方向跑偏；落地成本高；结果不可量化" />
-                            </Form.Item>
-                            <Space>
-                              <Button type="primary" onClick={confirmIntent} loading={generatingExpectedResult}>
-                                确认意图并进入角色矩阵
-                              </Button>
-                            </Space>
-                          </Form>
-                        </Card>
-                      </Space>
-                    </div>
-                  </Card>
-                </Col>
-                )}
-              </Row>
+            {step === 'roundtable' && !isExpertMode && (
+              <StepDemandRecognition
+                initialDemand={initialDemand}
+                uploadedMaterials={uploadedMaterials}
+                intentCard={intentCard}
+                isExpertMode={isExpertMode}
+                scenarioTemplates={scenarioTemplates}
+                roomId={roomId}
+                preUploadRoomId={preUploadRoomId}
+                onInitialDemandChange={setInitialDemand}
+                onMaterialsAnalyzed={handleMaterialsAnalyzed}
+                onIntentSynthesized={(result: any) => {
+                  if (result.synthesized_intent.core_goal && !intentCard.coreGoal) {
+                    setIntentCard((prev) => ({
+                      ...prev,
+                      coreGoal: result.synthesized_intent.core_goal,
+                      constraints: result.synthesized_intent.constraints || prev.constraints,
+                      painPoints: result.synthesized_intent.pain_points || prev.painPoints,
+                    }));
+                  }
+                }}
+                onStartIntentProbing={startIntentProbing}
+                onIsExpertModeChange={setIsExpertMode}
+                onSelectScenarioTemplate={selectScenarioTemplate}
+              />
+            )}
+            
+            {step === 'roundtable' && isExpertMode && (
+              <ExpertModeConfig
+                initialDemand={initialDemand}
+                uploadedMaterials={uploadedMaterials}
+                intentCard={intentCard}
+                isExpertMode={isExpertMode}
+                scenarioTemplates={scenarioTemplates}
+                roomId={roomId}
+                preUploadRoomId={preUploadRoomId}
+                onInitialDemandChange={setInitialDemand}
+                onMaterialsAnalyzed={handleMaterialsAnalyzed}
+                onIntentSynthesized={(result: any) => {
+                  if (result.synthesized_intent.core_goal && !intentCard.coreGoal) {
+                    setIntentCard((prev) => ({
+                      ...prev,
+                      coreGoal: result.synthesized_intent.core_goal,
+                      constraints: result.synthesized_intent.constraints || prev.constraints,
+                      painPoints: result.synthesized_intent.pain_points || prev.painPoints,
+                    }));
+                  }
+                }}
+                onStartIntentProbing={startIntentProbing}
+                onIsExpertModeChange={setIsExpertMode}
+                onSelectScenarioTemplate={selectScenarioTemplate}
+                probeTurns={probeTurns}
+                probeQuestions={probeQuestions}
+                customProbeOptions={customProbeOptions}
+                onCustomProbeOptionsChange={setCustomProbeOptions}
+                onApplyProbeAnswer={applyProbeAnswer}
+                onResetAnalysisState={() => {
+                  setProbeQuestions([]);
+                  setProbeTurns([]);
+                  setIntentCard({ coreGoal: '', constraints: '', painPoints: '' });
+                  setExpectedResult('');
+                  setAutoRoundCount(0);
+                  setIntentReady(false);
+                  setRolesReady(false);
+                  setRoomReady(false);
+                  setRoles([]);
+                  setMessages([]);
+                  setCanvasConsensus([]);
+                  setCanvasDisputes([]);
+                  setCanvasUpdatedAt('');
+                  form.resetFields();
+                }}
+                models={models}
+                loadingModels={loadingModels}
+                selectedModelId={selectedModelId}
+                onSelectedModelIdChange={setSelectedModelId}
+                systemPrompt={systemPrompt}
+                onSystemPromptChange={setSystemPrompt}
+                promptTemplates={promptTemplates}
+                expectedResult={expectedResult}
+                onExpectedResultChange={setExpectedResult}
+                maxDialogueRounds={maxDialogueRounds}
+                onMaxDialogueRoundsChange={setMaxDialogueRounds}
+                form={form}
+                generatingExpectedResult={generatingExpectedResult}
+                onGenerateExpectedResult={async () => {
+                  const values = await form.validateFields();
+                  setGeneratingExpectedResult(true);
+                  try {
+                    const generated = await generateExpectedResultByIntent(values as IntentCardState);
+                    setExpectedResult(generated);
+                    message.success('已生成期望结果');
+                  } finally {
+                    setGeneratingExpectedResult(false);
+                  }
+                }}
+                onIntentCardChange={(val) => setIntentCard(val)}
+                onConfirmIntent={confirmIntent}
+              />
             )}
 
             {step === 'roles' && (
-              <Row gutter={16}>
-                <Col xs={24} xl={14}>
-                  <Card 
-                    title={
-                      <Space>
-                        <Button 
-                          size="small" 
-                          onClick={() => setStep('roundtable')}
-                          icon={<span>←</span>}
-                        >
-                          返回
-                        </Button>
-                        <span>角色矩阵（请确认参与圆桌的角色）</span>
-                        <Button 
-                          size="small" 
-                          icon={<RedoOutlined />}
-                          loading={isReGeneratingRoles}
-                          onClick={reGenerateRoles}
-                        >
-                          重新智能选择
-                        </Button>
-                      </Space>
-                    }
-                    style={{ borderRadius: 8 }}
-                  >
-                    {!intentReady && <Empty description="请先完成需求识别" />}
-                    {intentReady && (
-                      <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                        <Row gutter={[12, 12]}>
-                          {roles.map((role) => (
-                            <Col xs={24} md={12} key={role.id}>
-                              <Card
-                                hoverable
-                                style={{
-                                  borderRadius: 8,
-                                  border:
-                                    role.name.includes('黑帽') || role.stance === '对抗'
-                                      ? '1px solid #d4380d'
-                                      : role.selected
-                                        ? '1px solid #1677ff'
-                                        : '1px solid #f0f0f0',
-                                }}
-                                actions={[
-                                  <Button
-                                    key="soul"
-                                    type="text"
-                                    size="small"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setEditingSoulConfigRole(role);
-                                      setEditingSoulConfigText(role.soulConfig || '');
-                                    }}
-                                  >
-                                    灵魂配置
-                                  </Button>,
-                                  ...(role.id.startsWith('custom_')
-                                    ? [
-                                        <Button
-                                          key="edit"
-                                          type="text"
-                                          size="small"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            const newName = prompt('编辑角色名称', role.name);
-                                            if (newName && newName.trim()) {
-                                              setRoles((prev) =>
-                                                prev.map((r) => (r.id === role.id ? { ...r, name: newName.trim() } : r))
-                                              );
-                                              message.success('角色名称已更新');
-                                            }
-                                          }}
-                                        >
-                                          编辑
-                                        </Button>,
-                                        <Button
-                                          key="delete"
-                                          type="text"
-                                          size="small"
-                                          danger
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            deleteRole(role.id);
-                                          }}
-                                        >
-                                          删除
-                                        </Button>,
-                                      ]
-                                    : []),
-                                ]}
-                              >
-                                <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                                  <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                                    <Space>
-                                      <Text strong>{role.name}</Text>
-                                      <Tag color={role.name.includes('黑帽') || role.stance === '对抗' ? 'volcano' : role.stance === '建设' ? 'blue' : 'default'}>
-                                        {role.stance}
-                                      </Tag>
-                                    </Space>
-                                    <Switch checked={role.selected} onChange={() => toggleRoleSelected(role.id)} />
-                                  </Space>
-                                  <Text type="secondary">{role.desc}</Text>
-                                </Space>
-                              </Card>
-                            </Col>
-                          ))}
-                        </Row>
-                        <Divider />
-                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                          <Text strong>角色管理</Text>
-                          <Space wrap>
-                            <Button icon={<PlusOutlined />} onClick={() => { setAddRoleForm({ name: '', stance: '建设', desc: '' }); setNewRoleName(''); setAddRoleModalVisible(true); }} type="primary">
-                              添加自定义角色
-                            </Button>
-                            <Button icon={<AppstoreAddOutlined />} onClick={() => setTemplatePickerVisible(true)}>
-                              从模板库添加
-                            </Button>
-                          </Space>
-                        </Space>
-                      </Space>
-                    )}
-                  </Card>
-                </Col>
-                <Col xs={24} xl={10}>
-                  <Card title="确认与启动" style={{ borderRadius: 8 }}>
-                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                      <Card size="small">
-                        <Text strong>意图锚点</Text>
-                        <Paragraph style={{ marginBottom: 0 }}>{intentCard.coreGoal || '-'}</Paragraph>
-                      </Card>
-                      <Card size="small">
-                        <Text strong>期望结果</Text>
-                        <Paragraph style={{ marginBottom: 0 }}>{expectedResult || '-'}</Paragraph>
-                      </Card>
-                      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                        <Text>对话轮数上限</Text>
-                        <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => setMaxDialogueRounds(Number(v || 6))} />
-                      </Space>
-                      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                        <Text>群聊模式（多角色脑暴）</Text>
-                        <Switch checked={autoBrainstorm} onChange={(v) => setAutoBrainstorm(v)} />
-                      </Space>
-                      <Button type="primary" onClick={confirmRoles} disabled={!intentReady}>
-                        确认角色并创建圆桌空间
-                      </Button>
-                      <Text type="secondary">
-                        圆桌空间中，你（"我"）是特殊角色：可以发言、暂停生成、清空讨论、通过系统提示词进行纠偏。
-                      </Text>
-                    </Space>
-                  </Card>
-                </Col>
-              </Row>
+              <StepRoleMatrix
+                roles={roles}
+                isReGeneratingRoles={isReGeneratingRoles}
+                intentCard={intentCard}
+                intentReady={intentReady}
+                expectedResult={expectedResult}
+                maxDialogueRounds={maxDialogueRounds}
+                autoBrainstorm={autoBrainstorm}
+                onGenerateRoles={reGenerateRoles}
+                onRemoveRole={(id) => {
+                  setRoles((prev) => prev.filter((r) => r.id !== id));
+                }}
+                onToggleRoleSelected={toggleRoleSelected}
+                onEditSoulConfig={(role) => {
+                  setEditingSoulConfigRole(role);
+                  setEditingSoulConfigText(role.soulConfig || '');
+                }}
+                onShowAddRoleModal={() => {
+                  setAddRoleForm({ name: '', stance: '建设', desc: '' });
+                  setNewRoleName('');
+                  setAddRoleModalVisible(true);
+                }}
+                onShowTemplatePicker={() => setTemplatePickerVisible(true)}
+                  onExpectedResultChange={setExpectedResult}
+                  onMaxRoundsChange={setMaxDialogueRounds}
+                onAutoBrainstormChange={setAutoBrainstorm}
+                onConfirmRoles={confirmRoles}
+              />
             )}
 
-            {/* 灵魂配置编辑弹窗 */}
-            <Modal
-              title={<Space><span>🧬 灵魂配置</span><Tag color="blue">{editingSoulConfigRole?.name}</Tag></Space>}
-              open={!!editingSoulConfigRole}
-              onCancel={() => setEditingSoulConfigRole(null)}
-              footer={
-                <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-                  <Button onClick={() => setEditingSoulConfigRole(null)}>取消</Button>
-                  <Button 
-                    type="primary" 
-                    onClick={() => {
-                      if (editingSoulConfigRole) {
-                        setRoles((prev) =>
-                          prev.map((r) =>
-                            r.id === editingSoulConfigRole.id ? { ...r, soulConfig: editingSoulConfigText } : r)
-                        );
-                        message.success('灵魂配置已更新');
-                        setEditingSoulConfigRole(null);
-                      }
-                    }}
-                  >
-                    保存配置
-                  </Button>
-                </Space>
-              }
-              width={700}
-            >
-              <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-                请输入角色的完整灵魂配置提示词，定义角色的性格、偏好、表达风格等
-              </Text>
-              <Input.TextArea
-                rows={20}
-                value={editingSoulConfigText}
-                onChange={(e) => setEditingSoulConfigText(e.target.value)}
-                placeholder="【角色名称】
-
-1. 灵魂内核
-- 信条：...
-- 性格：...
-- 使命：...
-- 底色：...
-
-2. 认知偏见与偏好
-- 偏好：...
-- 反感：...
-- 观点：...
-
-3. 专家领域
-- 专长：...
-- 领地：...
-
-4. 边界与抗拒
-- 抗拒：...
-- 红线：...
-
-5. 表达风格
-- 风格：...
-- 语气：..."
-              />
-            </Modal>
-
-            {/* 添加自定义角色 Modal */}
-            <Modal
-              title="添加自定义角色"
-              open={addRoleModalVisible}
-              onCancel={() => setAddRoleModalVisible(false)}
-              onOk={addCustomRole}
-              okText="添加"
-              cancelText="取消"
-              destroyOnClose
-            >
-              <Space direction="vertical" size={14} style={{ width: '100%', marginTop: 8 }}>
-                <div>
-                  <Text strong style={{ display: 'block', marginBottom: 4 }}>角色名称 <span style={{ color: '#ff4d4f' }}>*</span></Text>
-                  <Input
-                    placeholder="例如：数据安全专家、市场分析师"
-                    value={newRoleName}
-                    onChange={(e) => setNewRoleName(e.target.value)}
-                    onPressEnter={addCustomRole}
-                    maxLength={20}
-                    showCount
-                  />
-                </div>
-                <div>
-                  <Text strong style={{ display: 'block', marginBottom: 4 }}>角色立场</Text>
-                  <Select
-                    value={addRoleForm.stance}
-                    onChange={(val) => setAddRoleForm((prev) => ({ ...prev, stance: val }))}
-                    style={{ width: '100%' }}
-                    options={[
-                      { value: '建设', label: '建设 - 积极推动、贡献方案' },
-                      { value: '对抗', label: '对抗 - 质疑挑战、压力测试' },
-                      { value: '中立', label: '中立 - 客观分析、多面评估' },
-                      { value: '评审', label: '评审 - 严格审核、质量把关' },
-                    ]}
-                  />
-                </div>
-                <div>
-                  <Text strong style={{ display: 'block', marginBottom: 4 }}>角色描述</Text>
-                  <Input.TextArea
-                    rows={3}
-                    placeholder="简要描述该角色的职责和视角，帮助圆桌讨论时更好地理解角色定位"
-                    value={addRoleForm.desc}
-                    onChange={(e) => setAddRoleForm((prev) => ({ ...prev, desc: e.target.value }))}
-                    maxLength={200}
-                    showCount
-                  />
-                </div>
-              </Space>
-            </Modal>
-
-            {/* 从模板库添加角色 Modal */}
-            <Modal
-              title="从模板库添加角色"
-              open={templatePickerVisible}
-              onCancel={() => setTemplatePickerVisible(false)}
-              footer={null}
-              width={700}
-              destroyOnClose
-            >
-              <Input
-                placeholder="搜索角色名称或描述..."
-                style={{ width: '100%', marginBottom: 12 }}
-                allowClear
-              />
-              <div style={{ maxHeight: 480, overflowY: 'auto' }}>
-                {roleTemplates.filter(t => t.is_active !== false).length === 0 ? (
-                  <Empty description="暂无可用角色模板" />
-                ) : (
-                  <Row gutter={[8, 8]}>
-                    {roleTemplates
-                      .filter(t => t.is_active !== false)
-                      .filter(t => !roles.some(r => r.id === `role_${t.id}`))
-                      .map((template) => (
-                        <Col xs={24} md={12} key={template.id}>
-                          <Card
-                            hoverable
-                            size="small"
-                            style={{ borderRadius: 6 }}
-                            onClick={() => addRoleFromTemplate(template.id)}
-                          >
-                            <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                                <Text strong>{template.name}</Text>
-                                <Tag color={
-                                  template.stance === '建设' ? 'blue' :
-                                  template.stance === '对抗' ? 'red' :
-                                  template.stance === '评审' ? 'gold' : 'default'
-                                }>
-                                  {template.stance}
-                                </Tag>
-                              </Space>
-                              <Text type="secondary" style={{ fontSize: 12 }}>
-                                {template.description || '暂无描述'}
-                              </Text>
-                              {(template.category || template.skill_tags?.length) && (
-                                <Space wrap size={2}>
-                                  {template.category && <Tag style={{ fontSize: 10 }}>{template.category}</Tag>}
-                                  {(template.skill_tags || []).slice(0, 2).map(tag => (
-                                    <Tag key={tag} style={{ fontSize: 10 }} color="processing">{tag}</Tag>
-                                  ))}
-                                </Space>
-                              )}
-                            </Space>
-                          </Card>
-                        </Col>
-                      ))
-                    }
-                  </Row>
-                )}
-                {roleTemplates.filter(t => t.is_active !== false).length > 0 &&
-                  roleTemplates.filter(t => t.is_active !== false).filter(t => !roles.some(r => r.id === `role_${t.id}`)).length === 0 && (
-                  <Empty description="所有可用模板角色已添加" />
-                )}
-              </div>
-            </Modal>
+            <RoleModals
+              editingSoulConfigRole={editingSoulConfigRole}
+              editingSoulConfigText={editingSoulConfigText}
+              addRoleModalVisible={addRoleModalVisible}
+              newRoleName={newRoleName}
+              addRoleForm={addRoleForm}
+              templatePickerVisible={templatePickerVisible}
+              roleTemplates={roleTemplates}
+              roles={roles}
+              onEditingSoulConfigRoleChange={setEditingSoulConfigRole}
+              onEditingSoulConfigTextChange={setEditingSoulConfigText}
+              onSaveSoulConfig={() => {
+                if (editingSoulConfigRole) {
+                  setRoles((prev) =>
+                    prev.map((r) =>
+                      r.id === editingSoulConfigRole.id ? { ...r, soulConfig: editingSoulConfigText } : r)
+                  );
+                  message.success('灵魂配置已更新');
+                  setEditingSoulConfigRole(null);
+                }
+              }}
+              onAddRoleModalVisibleChange={setAddRoleModalVisible}
+              onNewRoleNameChange={setNewRoleName}
+              onAddRoleFormChange={setAddRoleForm}
+              onAddCustomRole={addCustomRole}
+              onTemplatePickerVisibleChange={setTemplatePickerVisible}
+              onAddRoleFromTemplate={addRoleFromTemplate}
+            />
 
             <Modal
               title="输入新点子"
@@ -2719,151 +2367,19 @@ ${JSON.stringify(roleCandidates, null, 2)}
             </Modal>
 
             {step === 'roundtable_view' && (
-              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'}}>
-
-                <Row gutter={16} style={{ flex: 1, minHeight: 0, overflow: 'visible' }}>
-                  {/* 左侧：对话流 */}
-                  <Col xs={24} xl={17} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' }}>
-                    <Card
-                      title={
-                        <Space>
-                          <span>圆桌空间</span>
-                          <Tag>{messages.length}</Tag>
-                        </Space>
-                      }
-                      style={{ borderRadius: 8, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-                      bodyStyle={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
-                    >
-                    {!roomReady && <Empty description="请先完成需求识别与角色确认" />}
-                    {roomReady && (
-                      <div style={{ flex: 1, minHeight: 0, maxHeight: 'calc(100vh - 350px)', overflowY: 'auto', padding: '0 16px 16px', overflowX: 'hidden' }}>
-                        {messages.length === 0 && <Empty description="暂无讨论内容，先在底部输入并发送" />}
-                        <List
-                          dataSource={messages}
-                          renderItem={(item) => (
-                            <List.Item
-                              style={{
-                                border: 'none',
-                                justifyContent: item.speakerType === 'user' ? 'flex-end' : 'flex-start',
-                                padding: '8px 0',
-                              }}
-                            >
-                              <Space align="start" style={{ width: '100%', maxWidth: '100%' }}>
-                                {item.speakerType !== 'user' && (
-                                  <Avatar style={{ background: '#52c41a' }}>{item.speakerName.slice(0, 1)}</Avatar>
-                                )}
-                                <Card
-                                  size="small"
-                                  style={{
-                                    maxWidth: '100%',
-                                    width: '100%',
-                                    borderRadius: 10,
-                                    border: item.speakerType === 'user' ? '1px solid #1677ff' : '1px solid #f0f0f0',
-                                    background: item.speakerType === 'user' ? '#e6f4ff' : '#ffffff',
-                                  }}
-                                >
-                                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                                    <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                                      <Space>
-                                        <Text strong>{item.speakerName}</Text>
-                                        {item.streaming && <Tag color="processing">流式中</Tag>}
-                                      </Space>
-                                      <Text type="secondary">{item.createdAt}</Text>
-                                    </Space>
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                      {item.content || '正在思考...'}
-                                    </ReactMarkdown>
-                                  </Space>
-                                </Card>
-                              </Space>
-                            </List.Item>
-                          )}
-                        />
-                      </div>
-                    )}
-                  </Card>
-                </Col>
-
-                {/* 右侧：书记员看板（占30%） */}
-                <Col xs={24} xl={7} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
-                  {/* 顶部：目标达成度进度条 */}
-                  <Card size="small" style={{ borderRadius: 8 }}>
-                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                      <Row align="middle" justify="space-between">
-                        <Col>
-                          <Text strong>目标达成度</Text>
-                        </Col>
-                        <Col>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            共识 {judgeState.consensusCount} · 已解痛点 {judgeState.resolvedPainPoints} · 任务 {runtimePendingTasks}
-                          </Text>
-                        </Col>
-                      </Row>
-                      <Tooltip title={judgeReason || '等待裁判评估中...'}>
-                        <Progress 
-                          percent={judgeScore} 
-                          status={judgeScore >= 90 ? 'success' : 'active'} 
-                          strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
-                          size="small"
-                        />
-                      </Tooltip>
-                      <Text type="secondary" style={{ fontSize: 12, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={judgeReason || '等待裁判评估中...'}>
-                        {judgeReason || '等待裁判评估中...'}
-                      </Text>
-                    </Space>
-                  </Card>
-
-                  {/* 书记员看板 — 始终展开，置顶 */}
-                  <Card
-                    title={
-                      <Space>
-                        <span>书记员看板</span>
-                        <Tag color={consensusBoard.disputes.length > 0 ? 'orange' : 'green'}>
-                          {consensusBoard.disputes.length > 0 ? '存在争议' : '持续收敛'}
-                        </Tag>
-                      </Space>
-                    }
-                    style={{ borderRadius: 8 }}
-                    bodyStyle={{ maxHeight: 'calc(100vh - 420px)', overflowY: 'auto' }}
-                  >
-                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                      <Text>{consensusBoard.summary || '书记员正在整理当前共识与争议...'}</Text>
-                      <div>
-                        <Text strong>当前共识</Text>
-                        <List
-                          size="small"
-                          dataSource={consensusBoard.consensus.slice(0, 4)}
-                          locale={{ emptyText: '暂无共识' }}
-                          renderItem={(text) => (
-                            <List.Item style={{ border: 'none', padding: '6px 0' }}>
-                              <Text>{text}</Text>
-                            </List.Item>
-                          )}
-                        />
-                      </div>
-                      <div>
-                        <Text strong>核心争议</Text>
-                        <List
-                          size="small"
-                          dataSource={consensusBoard.disputes.slice(0, 2)}
-                          locale={{ emptyText: '暂无争议' }}
-                          renderItem={(item) => (
-                            <List.Item style={{ border: 'none', padding: '6px 0' }}>
-                              <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                                <Text strong>{item.topic || '未命名争议'}</Text>
-                                <Text type="secondary">正方：{item.pro || '待补充'}</Text>
-                                <Text type="secondary">反方：{item.con || '待补充'}</Text>
-                              </Space>
-                            </List.Item>
-                          )}
-                        />
-                      </div>
-                    </Space>
-                  </Card>
-
-                </Col>
-                </Row>
-              </div>
+              <StepRoundtableView
+                roomReady={roomReady}
+                messages={messages}
+                expandedMessageIds={expandedMessageIds}
+                replyViewMode={replyViewMode}
+                judgeState={judgeState}
+                judgeScore={judgeScore}
+                judgeReason={judgeReason}
+                consensusBoard={consensusBoard}
+                runtimePendingTasks={runtimePendingTasks}
+                onToggleExpandedMessage={toggleExpandedMessage}
+                onReplyViewModeChange={handleReplyViewModeChange}
+              />
             )}
 
             {/* 共识摘要独立页面 */}

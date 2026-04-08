@@ -92,16 +92,31 @@ async def stream_chat_by_llm_config(
             if body.system_prompt:
                 messages.append({"role": "system", "content": body.system_prompt})
             messages.append({"role": "user", "content": body.message})
-            stream = await client.chat.completions.create(
-                model=llm_config.model_name,
-                messages=messages,
-                temperature=llm_config.temperature,
-                stream=True,
-            )
+
+            create_kwargs: dict = {
+                "model": llm_config.model_name,
+                "messages": messages,
+                "temperature": llm_config.temperature,
+                "stream": True,
+            }
+
+            stream = await client.chat.completions.create(**create_kwargs)
             async for chunk in stream:
                 content = ""
+                reasoning_content = ""
                 if chunk.choices and chunk.choices[0].delta:
                     content = chunk.choices[0].delta.content or ""
+                    # 兼容多种 API 的思考内容字段（DeepSeek: reasoning_content, 部分 API: reasoning, thinking 等）
+                    delta = chunk.choices[0].delta
+                    reasoning_content = (
+                        getattr(delta, 'reasoning_content', None)
+                        or getattr(delta, 'reasoning', None)
+                        or getattr(delta, 'thinking', None)
+                        or (delta.model_extra or {}).get('reasoning_content')
+                        or ''
+                    )
+                if reasoning_content and body.enable_thinking:
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': reasoning_content}, ensure_ascii=False)}\n\n"
                 if content:
                     yield f"data: {json.dumps({'type': 'delta', 'content': content}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"

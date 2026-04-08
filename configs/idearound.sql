@@ -94,6 +94,7 @@ CREATE TABLE `llm_configs`  (
   `temperature` float NULL DEFAULT NULL,
   `config` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
   `is_active` tinyint(1) NULL DEFAULT NULL,
+  `enable_thinking` tinyint(1) NULL DEFAULT 0,
   `created_at` datetime NOT NULL,
   `updated_at` datetime NOT NULL,
   PRIMARY KEY (`id`) USING BTREE,

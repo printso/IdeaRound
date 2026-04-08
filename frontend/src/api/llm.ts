@@ -1,4 +1,6 @@
+// Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
 import api from './index';
+import { buildApiUrl, buildRequestHeaders, requestJson } from './fetchClient';
 
 export interface LLMConfig {
   id: number;
@@ -8,6 +10,7 @@ export interface LLMConfig {
   api_base?: string;
   model_name: string;
   is_active: boolean;
+  enable_thinking: boolean;
   temperature: number;
   created_at: string;
   updated_at?: string;
@@ -20,6 +23,7 @@ export interface LLMConfigCreate {
   api_base?: string;
   model_name: string;
   is_active?: boolean;
+  enable_thinking?: boolean;
   temperature?: number;
 }
 
@@ -30,6 +34,7 @@ export interface LLMConfigUpdate {
   api_base?: string;
   model_name?: string;
   is_active?: boolean;
+  enable_thinking?: boolean;
   temperature?: number;
 }
 
@@ -61,6 +66,7 @@ export const deleteLLMConfig = async (id: number) => {
 export interface LLMChatStreamRequest {
   message: string;
   system_prompt?: string;
+  enable_thinking?: boolean;
 }
 
 export const streamChatByLLMConfig = async (
@@ -68,19 +74,18 @@ export const streamChatByLLMConfig = async (
   request: LLMChatStreamRequest,
   callbacks: {
     onDelta: (content: string) => void;
+    onThinking?: (content: string) => void;
     onDone: () => void;
     onError: (error: string) => void;
   },
   options?: { signal?: AbortSignal }
 ) => {
   try {
-    const token = localStorage.getItem('token');
-    const response = await fetch(`/api/v1/llm/${configId}/chat/stream`, {
+    const response = await fetch(buildApiUrl(`/llm/${configId}/chat/stream`), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: buildRequestHeaders({
+        body: JSON.stringify(request),
+      }),
       body: JSON.stringify(request),
       signal: options?.signal,
     });
@@ -118,6 +123,8 @@ export const streamChatByLLMConfig = async (
             const data = JSON.parse(dataStr);
             if (data.type === 'delta') {
               callbacks.onDelta(data.content);
+            } else if (data.type === 'thinking') {
+              callbacks.onThinking?.(data.content);
             } else if (data.type === 'error') {
               callbacks.onError(data.message);
               return;
@@ -143,22 +150,10 @@ export const syncChatByLLMConfig = async (
   configId: number,
   request: LLMChatStreamRequest
 ): Promise<string> => {
-  const token = localStorage.getItem('token');
-  const response = await fetch(`/api/v1/llm/${configId}/chat/sync`, {
+  const data = await requestJson<{ content: string }>(`/llm/${configId}/chat/sync`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
     body: JSON.stringify(request),
   });
-
-  if (!response.ok) {
-    const errData = await response.json();
-    throw new Error(errData.detail || '请求失败');
-  }
-
-  const data = await response.json();
   return data.content;
 };
 
@@ -166,20 +161,8 @@ export const judgeDiscussionProgress = async (
   configId: number,
   request: LLMChatStreamRequest
 ): Promise<{ score: number; reason: string; reached: boolean }> => {
-  const token = localStorage.getItem('token');
-  const response = await fetch(`/api/v1/llm/${configId}/chat/judge`, {
+  return requestJson<{ score: number; reason: string; reached: boolean }>(`/llm/${configId}/chat/judge`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
     body: JSON.stringify(request),
   });
-
-  if (!response.ok) {
-    const errData = await response.json();
-    throw new Error(errData.detail || '裁判请求失败');
-  }
-
-  return await response.json();
 };

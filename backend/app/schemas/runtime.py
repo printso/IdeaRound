@@ -29,6 +29,8 @@ class RuntimeRoundtableMessageRequest(BaseModel):
     speaker_name: str
     speaker_type: str
     content: str
+    summary: Optional[str] = None
+    summary_metrics: Optional[Dict[str, Any]] = None
     created_at: str
     streaming: Optional[bool] = False
 
@@ -70,6 +72,7 @@ class RuntimeTaskResponse(BaseModel):
 
 class RuntimeEventTrackRequest(BaseModel):
     room_id: Optional[str] = None
+    user_id: Optional[int] = None
     event_type: str
     event_payload: Optional[Dict[str, Any]] = None
     task_id: Optional[str] = None
@@ -80,6 +83,7 @@ class RuntimeEventTrackRequest(BaseModel):
 class RuntimeEventResponse(BaseModel):
     id: int
     room_id: Optional[str] = None
+    user_id: Optional[int] = None
     task_id: Optional[str] = None
     event_type: str
     success: bool
@@ -104,12 +108,39 @@ class RuntimeMetricsSummary(BaseModel):
     failed_tasks: int
     pending_tasks: int
     avg_task_duration_ms: int
+    avg_summary_duration_ms: int
+    p95_summary_duration_ms: int
     total_events: int
     host_events: int
     material_events: int
+    compact_mode_penetration: float
+    compact_mode_users: int
+    tracked_view_mode_users: int
     latest_events: List[RuntimeEventResponse]
 
 
 class RuntimeTaskCancelResponse(BaseModel):
     task_id: str
     status: str
+
+
+class RuntimeMessageSummaryRequest(BaseModel):
+    room_id: Optional[str] = None
+    model_id: int
+    force_refresh: bool = False
+    messages: List[RuntimeRoundtableMessageRequest]
+
+
+class RuntimeMessageSummaryItem(BaseModel):
+    message_id: str
+    summary: str
+    semantic_consistency: float
+    duration_ms: int
+    cache_hit: bool = False
+    meets_rt_target: bool = False
+
+
+class RuntimeMessageSummaryResponse(BaseModel):
+    items: List[RuntimeMessageSummaryItem]
+    avg_duration_ms: int
+    p95_duration_ms: int

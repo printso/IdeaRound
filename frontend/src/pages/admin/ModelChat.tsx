@@ -1,7 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Layout,
-  Menu,
   Button,
   Input,
   Space,
@@ -12,24 +10,22 @@ import {
   Select,
   message,
   Spin,
+  Switch,
 } from 'antd';
 import {
   SendOutlined,
   PlusOutlined,
   MessageOutlined,
-  SettingOutlined,
   RobotOutlined,
-  DashboardOutlined,
-  ExperimentOutlined,
+  BulbOutlined,
 } from '@ant-design/icons';
 import { useLocation } from 'react-router-dom';
-import AppHeader from '../../components/AppHeader';
+import AdminPageLayout from '../../components/admin/AdminPageLayout';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { LLMConfig } from '../../api/llm';
 import { getLLMConfigs, streamChatByLLMConfig } from '../../api/llm';
 
-const { Sider, Content } = Layout;
 const { TextArea } = Input;
 const { Text } = Typography;
 
@@ -37,6 +33,7 @@ interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  thinking?: string;
   timestamp: Date;
 }
 
@@ -47,17 +44,24 @@ interface ChatSession {
   createdAt: Date;
 }
 
-type MenuKey = 'chat' | 'models' | 'prompts' | 'styles' | 'roles' | 'roundtable';
-
 const ModelChat: React.FC = () => {
   const location = useLocation();
-  const [selectedMenu, setSelectedMenu] = useState<MenuKey>('chat');
   const [models, setModels] = useState<LLMConfig[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<number | undefined>(undefined);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [enableThinking, setEnableThinking] = useState(false);
+
+  // 当选中模型变化时，同步其 enable_thinking 配置
+  useEffect(() => {
+    const selectedModel = models.find((m) => m.id === selectedModelId);
+    if (selectedModel) {
+      setEnableThinking(selectedModel.enable_thinking ?? false);
+    }
+  }, [selectedModelId, models]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // 从路由状态获取模型 ID
@@ -171,10 +175,9 @@ const ModelChat: React.FC = () => {
       // 流式调用
       await streamChatByLLMConfig(
         selectedModel.id,
-        { message: lastUserMessage.content },
+        { message: lastUserMessage.content, enable_thinking: enableThinking },
         {
           onDelta: (delta) => {
-            // 更新助手消息
             setSessions((prev) => {
               const newSessions = [...prev];
               const sessionIndex = newSessions.findIndex((s) => s.id === currentSessionId);
@@ -184,6 +187,21 @@ const ModelChat: React.FC = () => {
               const lastMsg = messages[messages.length - 1];
               if (lastMsg && lastMsg.role === 'assistant') {
                 messages[messages.length - 1] = { ...lastMsg, content: lastMsg.content + delta };
+              }
+              newSessions[sessionIndex] = { ...session, messages };
+              return newSessions;
+            });
+          },
+          onThinking: (delta) => {
+            setSessions((prev) => {
+              const newSessions = [...prev];
+              const sessionIndex = newSessions.findIndex((s) => s.id === currentSessionId);
+              if (sessionIndex === -1) return prev;
+              const session = newSessions[sessionIndex];
+              const messages = [...session.messages];
+              const lastMsg = messages[messages.length - 1];
+              if (lastMsg && lastMsg.role === 'assistant') {
+                messages[messages.length - 1] = { ...lastMsg, thinking: (lastMsg.thinking || '') + delta };
               }
               newSessions[sessionIndex] = { ...session, messages };
               return newSessions;
@@ -226,55 +244,9 @@ const ModelChat: React.FC = () => {
     }
   };
 
-  // 菜单项
-  const menuItems = [
-    {
-      key: 'chat',
-      icon: <MessageOutlined />,
-      label: '模型聊天',
-    },
-    {
-      key: 'models',
-      icon: <DashboardOutlined />,
-      label: '模型配置管理',
-    },
-    {
-      key: 'prompts',
-      icon: <MessageOutlined />,
-      label: '系统提示词管理',
-    },
-    {
-      key: 'styles',
-      icon: <ExperimentOutlined />,
-      label: '风格配置管理',
-    },
-    {
-      key: 'roles',
-      icon: <RobotOutlined />,
-      label: '角色模板管理',
-    },
-    {
-      key: 'roundtable',
-      icon: <SettingOutlined />,
-      label: '圆桌配置管理',
-    },
-  ];
-
   const renderContent = () => {
-    if (selectedMenu !== 'chat') {
-      // 其他菜单项的渲染（简化处理，实际应该路由到对应页面）
-      return (
-        <div style={{ padding: 24 }}>
-          <Card>
-            <p>此功能正在开发中...</p>
-            <Button onClick={() => setSelectedMenu('chat')}>返回聊天</Button>
-          </Card>
-        </div>
-      );
-    }
-
     return (
-      <div style={{ display: 'flex', height: 'calc(100vh - 64px)' }}>
+      <div style={{ display: 'flex', height: '100%' }}>
         {/* 左侧会话列表 */}
         <div
           style={{
@@ -371,6 +343,17 @@ const ModelChat: React.FC = () => {
               }))}
               placeholder="选择模型"
             />
+            <Space style={{ fontSize: 13 }}>
+              <BulbOutlined style={{ color: enableThinking ? '#faad14' : '#999' }} />
+              <span style={{ color: '#666' }}>思考模式</span>
+              <Switch
+                size="small"
+                checked={enableThinking}
+                onChange={setEnableThinking}
+                checkedChildren="开"
+                unCheckedChildren="关"
+              />
+            </Space>
           </div>
 
           {/* 消息列表 */}
@@ -448,6 +431,25 @@ const ModelChat: React.FC = () => {
                         bodyStyle={{ padding: '12px 16px' }}
                       >
                         <div style={{ fontSize: 14, lineHeight: 1.6 }}>
+                          {msg.role === 'assistant' && msg.thinking && (
+                            <details style={{ marginBottom: 8, color: '#666' }}>
+                              <summary style={{ cursor: 'pointer', fontSize: 12, userSelect: 'none' }}>
+                                <BulbOutlined style={{ marginRight: 4 }} />
+                                思考过程
+                              </summary>
+                              <div style={{
+                                marginTop: 6,
+                                padding: '8px 12px',
+                                background: '#fffbe6',
+                                borderRadius: 6,
+                                fontSize: 13,
+                                lineHeight: 1.5,
+                                whiteSpace: 'pre-wrap',
+                              }}>
+                                {msg.thinking}
+                              </div>
+                            </details>
+                          )}
                           {msg.role === 'assistant' ? (
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
                               {msg.content}
@@ -509,32 +511,9 @@ const ModelChat: React.FC = () => {
   };
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <AppHeader />
-      <Layout>
-        <Sider
-          width={250}
-          theme="light"
-          style={{ borderRight: '1px solid #f0f0f0' }}
-        >
-          <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0' }}>
-            <Text strong style={{ fontSize: 16 }}>
-              配置管理
-            </Text>
-          </div>
-          <Menu
-            mode="inline"
-            selectedKeys={[selectedMenu]}
-            items={menuItems}
-            onClick={({ key }) => setSelectedMenu(key as MenuKey)}
-            style={{ borderRight: 0 }}
-          />
-        </Sider>
-        <Content style={{ padding: 0, overflow: 'hidden' }}>
-          {renderContent()}
-        </Content>
-      </Layout>
-    </Layout>
+    <AdminPageLayout selectedMenu="chat" hideSidebar={false}>
+      {renderContent()}
+    </AdminPageLayout>
   );
 };
 

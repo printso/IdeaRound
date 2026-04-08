@@ -18,6 +18,8 @@ class Message(BaseModel):
     speaker_name: str
     speaker_type: str  # 'user' | 'agent'
     content: str
+    summary: Optional[str] = None
+    summary_metrics: Optional[Dict[str, Any]] = None
     streaming: Optional[bool] = False
     created_at: str
 

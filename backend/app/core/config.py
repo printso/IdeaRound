@@ -1,6 +1,8 @@
-import os
+"""应用配置中心。"""
+
+# Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
 from pydantic_settings import BaseSettings
-from typing import Optional, List
+from typing import List
 from dotenv import load_dotenv
 
 # 加载 .env 文件
@@ -24,6 +26,13 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_POOL_RECYCLE: int = 1800
+
+    # Redis 配置
+    REDIS_HOST: str = ""
+    REDIS_PORT: int = 6379
+    REDIS_PASSWORD: str = ""
+    REDIS_DB: int = 0
+    REDIS_SSL: bool = False
     
     # 认证配置
     AUTH_ENABLED: bool = True  # 是否启用登录认证
@@ -40,6 +49,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
         
     @property
     def cors_origins_list(self) -> List[str]:
@@ -47,5 +57,10 @@ class Settings(BaseSettings):
         if self.CORS_ORIGINS == "*":
             return ["*"]
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+
+    @property
+    def redis_enabled(self) -> bool:
+        """判断是否启用 Redis 配置。"""
+        return bool(self.REDIS_HOST.strip())
 
 settings = Settings()
