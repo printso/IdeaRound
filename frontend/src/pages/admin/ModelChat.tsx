@@ -95,7 +95,7 @@ const ModelChat: React.FC = () => {
   }, [sessions, currentSessionId]);
 
   // 创建新会话
-  const createNewSession = () => {
+  const createNewSession = (): string => {
     const newSession: ChatSession = {
       id: `session_${Date.now()}`,
       title: '新对话',
@@ -104,6 +104,7 @@ const ModelChat: React.FC = () => {
     };
     setSessions((prev) => [newSession, ...prev]);
     setCurrentSessionId(newSession.id);
+    return newSession.id;
   };
 
   // 获取当前会话
@@ -115,51 +116,55 @@ const ModelChat: React.FC = () => {
       return;
     }
 
+    const trimmedInput = inputValue.trim();
+    const targetSessionId = currentSessionId ?? `session_${Date.now()}`;
+    const isNewSession = !currentSessionId;
+
     const userMessage: ChatMessage = {
       id: `msg_${Date.now()}`,
       role: 'user',
-      content: inputValue.trim(),
+      content: trimmedInput,
       timestamp: new Date(),
     };
 
-    // 更新会话
-    setSessions((prev) =>
-      prev.map((session) => {
-        if (session.id === currentSessionId) {
-          return {
-            ...session,
-            messages: [...session.messages, userMessage],
-            title: session.messages.length === 0 ? inputValue.trim().slice(0, 30) : session.title,
-          };
-        }
-        return session;
-      })
-    );
+    const assistantMessageId = `msg_${Date.now() + 1}`;
+
+    setSessions((prev) => {
+      const existingSession = prev.find((session) => session.id === targetSessionId);
+      const baseSession: ChatSession = existingSession ?? {
+        id: targetSessionId,
+        title: '新对话',
+        messages: [],
+        createdAt: new Date(),
+      };
+      const updatedSession: ChatSession = {
+        ...baseSession,
+        title: baseSession.messages.length === 0 ? trimmedInput.slice(0, 30) : baseSession.title,
+        messages: [
+          ...baseSession.messages,
+          userMessage,
+          {
+            id: assistantMessageId,
+            role: 'assistant',
+            content: '',
+            timestamp: new Date(),
+          },
+        ],
+      };
+
+      if (existingSession) {
+        return prev.map((session) => (session.id === targetSessionId ? updatedSession : session));
+      }
+
+      return [updatedSession, ...prev];
+    });
+
+    if (isNewSession) {
+      setCurrentSessionId(targetSessionId);
+    }
 
     setInputValue('');
     setIsLoading(true);
-
-    // 添加助手消息占位
-    const assistantMessageId = `msg_${Date.now() + 1}`;
-    setSessions((prev) =>
-      prev.map((session) => {
-        if (session.id === currentSessionId) {
-          return {
-            ...session,
-            messages: [
-              ...session.messages,
-              {
-                id: assistantMessageId,
-                role: 'assistant',
-                content: '',
-                timestamp: new Date(),
-              },
-            ],
-          };
-        }
-        return session;
-      })
-    );
 
     try {
       // 获取选中的模型
@@ -180,13 +185,17 @@ const ModelChat: React.FC = () => {
           onDelta: (delta) => {
             setSessions((prev) => {
               const newSessions = [...prev];
-              const sessionIndex = newSessions.findIndex((s) => s.id === currentSessionId);
+              const sessionIndex = newSessions.findIndex((s) => s.id === targetSessionId);
               if (sessionIndex === -1) return prev;
               const session = newSessions[sessionIndex];
               const messages = [...session.messages];
-              const lastMsg = messages[messages.length - 1];
-              if (lastMsg && lastMsg.role === 'assistant') {
-                messages[messages.length - 1] = { ...lastMsg, content: lastMsg.content + delta };
+              const assistantIndex = messages.findIndex((msg) => msg.id === assistantMessageId);
+              const assistantMessage = assistantIndex >= 0 ? messages[assistantIndex] : null;
+              if (assistantMessage && assistantMessage.role === 'assistant') {
+                messages[assistantIndex] = {
+                  ...assistantMessage,
+                  content: assistantMessage.content + delta,
+                };
               }
               newSessions[sessionIndex] = { ...session, messages };
               return newSessions;
@@ -195,13 +204,17 @@ const ModelChat: React.FC = () => {
           onThinking: (delta) => {
             setSessions((prev) => {
               const newSessions = [...prev];
-              const sessionIndex = newSessions.findIndex((s) => s.id === currentSessionId);
+              const sessionIndex = newSessions.findIndex((s) => s.id === targetSessionId);
               if (sessionIndex === -1) return prev;
               const session = newSessions[sessionIndex];
               const messages = [...session.messages];
-              const lastMsg = messages[messages.length - 1];
-              if (lastMsg && lastMsg.role === 'assistant') {
-                messages[messages.length - 1] = { ...lastMsg, thinking: (lastMsg.thinking || '') + delta };
+              const assistantIndex = messages.findIndex((msg) => msg.id === assistantMessageId);
+              const assistantMessage = assistantIndex >= 0 ? messages[assistantIndex] : null;
+              if (assistantMessage && assistantMessage.role === 'assistant') {
+                messages[assistantIndex] = {
+                  ...assistantMessage,
+                  thinking: (assistantMessage.thinking || '') + delta,
+                };
               }
               newSessions[sessionIndex] = { ...session, messages };
               return newSessions;
@@ -222,7 +235,7 @@ const ModelChat: React.FC = () => {
       // 移除失败的助手消息
       setSessions((prev) =>
         prev.map((session) => {
-          if (session.id === currentSessionId) {
+          if (session.id === targetSessionId) {
             return {
               ...session,
               messages: session.messages.filter((msg) => msg.id !== assistantMessageId),

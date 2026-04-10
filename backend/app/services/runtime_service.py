@@ -18,6 +18,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 try:
     from backend.app.core.database import AsyncSessionLocal, get_db
+    from backend.app.core.redis_client import (
+        SUMMARY_CACHE_PREFIX,
+        SUMMARY_CACHE_TTL_SECONDS,
+        TASK_CHANNEL_PREFIX,
+        TASK_STATE_PREFIX,
+        TASK_STATE_TTL_SECONDS,
+        cache_delete,
+        cache_get,
+        cache_set,
+        is_redis_available,
+        publish_event,
+    )
     from backend.app.models.llm import LLMConfig
     from backend.app.models.runtime import RuntimeEvent, RuntimeTask
     from backend.app.schemas.runtime import (
@@ -35,6 +47,18 @@ try:
     )
 except ImportError:
     from app.core.database import AsyncSessionLocal, get_db
+    from app.core.redis_client import (
+        SUMMARY_CACHE_PREFIX,
+        SUMMARY_CACHE_TTL_SECONDS,
+        TASK_CHANNEL_PREFIX,
+        TASK_STATE_PREFIX,
+        TASK_STATE_TTL_SECONDS,
+        cache_delete,
+        cache_get,
+        cache_set,
+        is_redis_available,
+        publish_event,
+    )
     from app.models.llm import LLMConfig
     from app.models.runtime import RuntimeEvent, RuntimeTask
     from app.schemas.runtime import (
@@ -53,9 +77,9 @@ except ImportError:
 
 
 TERMINAL_STATUSES = {"completed", "failed", "canceled"}
+# 进程内 Queue 仍保留用于本 Worker 内的 SSE 推送；
+# Redis Pub/Sub 用于跨 Worker 广播，两者配合使用。
 TASK_STREAM_QUEUES: Dict[str, List[asyncio.Queue[Dict[str, Any]]]] = {}
-TASK_STREAM_STATE_CACHE: Dict[str, Dict[str, Any]] = {}
-MESSAGE_SUMMARY_CACHE: Dict[str, Dict[str, Any]] = {}
 SUMMARY_MAX_CHARS = 120
 SUMMARY_RT_TARGET_MS = 300
 ACTION_HINTS = ("建议", "需要", "应", "执行", "推进", "验证", "上线", "优化", "修复", "建立", "安排", "行动", "下一步")
@@ -111,19 +135,22 @@ async def _publish_task_stream_event(
     event_type: str,
     task_payload: Dict[str, Any],
 ) -> None:
+    event_message = {"event": event_type, "task": task_payload}
+
+    # 1) 本 Worker 内的 Queue 推送（低延迟）
     queues = TASK_STREAM_QUEUES.get(task_id, [])
-    if not queues:
-        return
-    message = {"event": event_type, "task": task_payload}
     stale_queues: List[asyncio.Queue[Dict[str, Any]]] = []
     for queue in queues:
         try:
-            queue.put_nowait(message)
+            queue.put_nowait(event_message)
         except asyncio.QueueFull:
             stale_queues.append(queue)
-    if stale_queues:
-        for queue in stale_queues:
-            _unsubscribe_task_stream(task_id, queue)
+    for queue in stale_queues:
+        _unsubscribe_task_stream(task_id, queue)
+
+    # 2) 跨 Worker 广播（Redis Pub/Sub）
+    if is_redis_available():
+        await publish_event(f"{TASK_CHANNEL_PREFIX}{task_id}", event_message)
 
 
 def _format_sse_message(event: str, data: Dict[str, Any]) -> str:
@@ -395,6 +422,27 @@ CONTEXT_EXCEEDED_KEYWORDS = (
 )
 
 
+_openai_client_cache: Dict[str, AsyncOpenAI] = {}
+_OPENAI_CLIENT_CACHE_MAX = 10
+
+
+def _get_or_create_openai_client(llm_settings: Dict[str, Any]) -> AsyncOpenAI:
+    """复用 AsyncOpenAI 客户端，避免每次调用创建新的 HTTP 连接池。"""
+    cache_key = f"{llm_settings['api_key'][:8]}:{llm_settings.get('api_base', '')}"
+    client = _openai_client_cache.get(cache_key)
+    if client is not None:
+        return client
+    if len(_openai_client_cache) >= _OPENAI_CLIENT_CACHE_MAX:
+        oldest_key = next(iter(_openai_client_cache))
+        _openai_client_cache.pop(oldest_key, None)
+    client = AsyncOpenAI(
+        api_key=llm_settings["api_key"],
+        base_url=llm_settings.get("api_base") or None,
+    )
+    _openai_client_cache[cache_key] = client
+    return client
+
+
 async def _call_llm_text_with_settings(
     llm_settings: Dict[str, Any],
     prompt: str,
@@ -402,10 +450,7 @@ async def _call_llm_text_with_settings(
     *,
     temperature: Optional[float] = None,
 ) -> str:
-    client = AsyncOpenAI(
-        api_key=llm_settings["api_key"],
-        base_url=llm_settings.get("api_base") or None,
-    )
+    client = _get_or_create_openai_client(llm_settings)
 
     async def _do_call(p: str):
         return await client.chat.completions.create(
@@ -441,10 +486,7 @@ async def _call_llm_stream_with_settings(
     *,
     temperature: Optional[float] = None,
 ):
-    client = AsyncOpenAI(
-        api_key=llm_settings["api_key"],
-        base_url=llm_settings.get("api_base") or None,
-    )
+    client = _get_or_create_openai_client(llm_settings)
 
     async def _do_call(p: str):
         return await client.chat.completions.create(
@@ -538,8 +580,8 @@ async def _summarize_message_batch(
             }
             cache_hit = True
         else:
-            cache_key = _build_summary_cache_key(request.model_id, message.content)
-            cached = MESSAGE_SUMMARY_CACHE.get(cache_key)
+            cache_key = f"{SUMMARY_CACHE_PREFIX}{_build_summary_cache_key(request.model_id, message.content)}"
+            cached = await cache_get(cache_key)
             if cached and not request.force_refresh:
                 summary_text = str(cached["summary"])
                 metrics = dict(cached["summary_metrics"])
@@ -548,7 +590,7 @@ async def _summarize_message_batch(
                 generated = await _generate_message_summary_with_settings(llm_settings, message.content)
                 summary_text = str(generated["summary"])
                 metrics = dict(generated["summary_metrics"])
-                MESSAGE_SUMMARY_CACHE[cache_key] = generated
+                await cache_set(cache_key, generated, ttl_seconds=SUMMARY_CACHE_TTL_SECONDS)
 
         items.append(
             RuntimeMessageSummaryItem(
@@ -592,10 +634,7 @@ async def _call_llm_json_with_settings(
     prompt: str,
     system_prompt: str,
 ) -> Dict[str, Any]:
-    client = AsyncOpenAI(
-        api_key=llm_settings["api_key"],
-        base_url=llm_settings.get("api_base") or None,
-    )
+    client = _get_or_create_openai_client(llm_settings)
 
     async def _do_call(p: str):
         return await client.chat.completions.create(
@@ -784,8 +823,10 @@ async def _set_task_state(
     finished: bool = False,
     persist: bool = True,
 ) -> Optional[RuntimeTask]:
+    state_cache_key = f"{TASK_STATE_PREFIX}{task_id}"
+
     if not persist:
-        cached_task = TASK_STREAM_STATE_CACHE.get(task_id)
+        cached_task = await cache_get(state_cache_key)
         if cached_task is None:
             async with AsyncSessionLocal() as db:
                 result = await db.execute(select(RuntimeTask).where(RuntimeTask.task_id == task_id))
@@ -793,7 +834,7 @@ async def _set_task_state(
                 if not task:
                     return None
                 cached_task = _serialize_runtime_task(task)
-                TASK_STREAM_STATE_CACHE[task_id] = cached_task
+                await cache_set(state_cache_key, cached_task, ttl_seconds=TASK_STATE_TTL_SECONDS)
 
         if status is not None:
             cached_task["status"] = status
@@ -806,6 +847,7 @@ async def _set_task_state(
         if finished:
             cached_task["finished_at"] = _utcnow().isoformat()
 
+        await cache_set(state_cache_key, cached_task, ttl_seconds=TASK_STATE_TTL_SECONDS)
         await _publish_task_stream_event(task_id, "task.update", dict(cached_task))
         return None
 
@@ -827,7 +869,7 @@ async def _set_task_state(
         await db.commit()
         await db.refresh(task)
         serialized = _serialize_runtime_task(task)
-        TASK_STREAM_STATE_CACHE[task.task_id] = serialized
+        await cache_set(state_cache_key, serialized, ttl_seconds=TASK_STATE_TTL_SECONDS)
         await _publish_task_stream_event(task.task_id, "task.update", serialized)
         return task
 
@@ -943,33 +985,29 @@ async def _generate_role_reply_stream(
             content += f"\n> (生成中断：{exc})"
 
     normalized_content = content.strip()
-    
-    # Final update with full content before summarization
-    current_messages[-1]["content"] = normalized_content
-    current_messages[-1]["streaming"] = False
-    await _set_task_state(
-        task_id, 
-        result_payload={
-            **base_result_payload,
-            "messages": current_messages,
-        }
-    )
-    
-    summary_bundle = await _generate_message_summary_with_settings(llm_settings, normalized_content)
 
-    final_msg = {
+    # 立即将已完成的流式消息落库并推送给前端，不等待摘要生成
+    # 摘要由调用方通过 asyncio.create_task 并发生成，不阻塞下一个角色的流式输出
+    final_msg: Dict[str, Any] = {
         "id": msg_id,
         "speaker_id": role.get("id") or "",
         "speaker_name": role.get("name") or "角色",
         "speaker_type": "agent",
         "content": normalized_content,
-        "summary": summary_bundle["summary"],
-        "summary_metrics": summary_bundle["summary_metrics"],
+        "summary": "",          # 由调用方并发填充
+        "summary_metrics": None,
         "streaming": False,
         "created_at": _utcnow().isoformat(),
     }
-    
+
     current_messages[-1] = final_msg
+    await _set_task_state(
+        task_id,
+        result_payload={
+            **base_result_payload,
+            "messages": current_messages,
+        },
+    )
     return final_msg
 
 
@@ -1027,6 +1065,8 @@ async def _process_roundtable_task(task_id: str) -> None:
         }
         await _set_task_state(task_id, result_payload=base_result_payload)
 
+        last_checked_msg_index = max(0, len(current_messages) - 1)
+
         while True:
             if await _is_cancel_requested(task_id):
                 canceled_payload = {**base_result_payload, "messages": current_messages}
@@ -1044,18 +1084,102 @@ async def _process_roundtable_task(task_id: str) -> None:
                 )
                 return
 
-            speaking_roles = roles if auto_brainstorm else roles[:1]
+            # 检查上一轮新增消息（或本轮用户输入）中是否有 @角色名
+            mentioned_role = None
+            for i in range(last_checked_msg_index, len(current_messages)):
+                content = current_messages[i].get("content", "")
+                for role in roles:
+                    role_name = role.get("name", "")
+                    # 匹配 @角色名，可能后面跟着空格或标点
+                    import re
+                    if role_name and re.search(r'@' + re.escape(role_name) + r'(?:\s|[^\w]|$)', content):
+                        mentioned_role = role
+                        break
+                if mentioned_role:
+                    break
             
-            # 顺序生成角色的回复，实现“仿日常真人群里沟通”的即时反馈体验
+            # 更新已检查的索引，下一轮只检查新产生的消息
+            last_checked_msg_index = len(current_messages)
+
+            # 获取调度模式配置
+            scheduling_mode = "single_round_robin" # 默认单角色轮询
+            try:
+                from app.models.roundtable_config import RoundtableConfig as DBRoundtableConfig
+                async with AsyncSessionLocal() as db_session:
+                    result = await db_session.execute(select(DBRoundtableConfig).where(DBRoundtableConfig.config_key == "role_scheduling_mode"))
+                    mode_config = result.scalars().first()
+                    if mode_config and mode_config.config_value:
+                        scheduling_mode = mode_config.config_value
+            except Exception:
+                pass
+
+            if mentioned_role:
+                speaking_roles = [mentioned_role]
+                schedule_reason = "mentioned"
+            elif scheduling_mode == "sequential_all":
+                speaking_roles = roles
+                schedule_reason = "sequential_all"
+            elif scheduling_mode == "single_random":
+                import random
+                speaking_roles = [random.choice(roles)]
+                schedule_reason = "single_random"
+            elif scheduling_mode == "host_specify":
+                # 由主持人(LLM)决定下一位发言人
+                transcript_for_host = _build_recent_transcript(current_messages, memory_summary=memory_summary, max_messages=6, max_chars=2000)
+                role_names = [r.get("name", "未知") for r in roles]
+                prompt_for_host = f"【最近对话】\n{transcript_for_host}\n\n【候选角色】\n{', '.join(role_names)}\n\n请根据上下文，决定下一位最适合发言的角色是谁。只需输出角色名，不要输出任何其他内容。如果无法决定，请输出随机角色名。"
+                system_prompt_for_host = "你是一个会议主持人，只负责指定下一位发言人。"
+                try:
+                    result_text = await _call_llm_text_with_settings(llm_settings, prompt_for_host, system_prompt_for_host, temperature=0.1)
+                    # 尝试精确匹配
+                    chosen_role = next((r for r in roles if r.get("name", "") == result_text.strip()), None)
+                    # 如果没有精确匹配，尝试模糊匹配
+                    if not chosen_role:
+                        chosen_role = next((r for r in roles if r.get("name", "") in result_text), None)
+                    if not chosen_role:
+                        import random
+                        chosen_role = random.choice(roles)
+                    speaking_roles = [chosen_role]
+                except Exception:
+                    import random
+                    speaking_roles = [random.choice(roles)]
+                schedule_reason = "host_specify"
+            else: # single_round_robin
+                role_index = current_round % len(roles)
+                speaking_roles = [roles[role_index]]
+                schedule_reason = "single_round_robin"
+
+            # 如果是主持人指定且不是因为@提及被覆盖，插入一条主持人的提示消息
+            if schedule_reason == "host_specify":
+                host_announce_msg = {
+                    "id": f"m_host_announce_{uuid.uuid4().hex[:10]}",
+                    "speaker_id": "host",
+                    "speaker_name": "主持人",
+                    "speaker_type": "host",
+                    "content": f"（主持人根据讨论脉络，指定 **{speaking_roles[0].get('name')}** 接下来发言）",
+                    "streaming": False,
+                    "created_at": _utcnow().isoformat(),
+                }
+                current_messages.append(host_announce_msg)
+                base_result_payload = {
+                    **base_result_payload,
+                    "messages": current_messages,
+                }
+                await _set_task_state(task_id, result_payload=base_result_payload)
+
+            # 收集摘要异步任务：(msg_id, Task)，随各角色流式输出并发执行
+            pending_summary_tasks: List[tuple] = []
+
+            # 顺序流式生成各角色回复——前端可实时看到每个角色逐字输出
             for role in speaking_roles:
-                # 1. 广播该角色“正在输入”的状态
+                # 1. 广播该角色"正在输入"的状态
                 temp_msg_id = f"m_{role.get('id', 'agent')}_{uuid.uuid4().hex[:10]}"
                 typing_msg = {
                     "id": temp_msg_id,
                     "speaker_id": role.get("id") or "",
                     "speaker_name": role.get("name") or "角色",
                     "speaker_type": "agent",
-                    "content": "正在思考中...",
+                    "content": "正在组织语言...",
                     "streaming": True,
                     "created_at": _utcnow().isoformat(),
                 }
@@ -1065,17 +1189,17 @@ async def _process_roundtable_task(task_id: str) -> None:
                     "messages": current_messages,
                 }
                 await _set_task_state(task_id, result_payload=base_result_payload)
-                
-                # 2. 实时构建最新的上下文（包含之前刚回复的角色的内容）
+
+                # 2. 实时构建上下文（不含正在输入的占位消息）
                 transcript = _build_recent_transcript(
-                    [m for m in current_messages if not m.get("streaming")], # 不包含正在输入的假消息
+                    [m for m in current_messages if not m.get("streaming")],
                     memory_summary=memory_summary,
                     max_messages=8,
                     max_chars=2600,
                 )
 
-                # 3. 请求 LLM 生成回复并流式返回
-                current_messages[-1]["content"] = "" # 清空"正在思考中..."
+                # 3. 流式生成回复并立即落库推送（函数内不再阻塞等待摘要）
+                current_messages[-1]["content"] = ""
                 role_message = await _generate_role_reply_stream(
                     llm_settings,
                     payload,
@@ -1087,10 +1211,16 @@ async def _process_roundtable_task(task_id: str) -> None:
                     task_id,
                     current_messages,
                     base_result_payload,
-                    temp_msg_id
+                    temp_msg_id,
                 )
-                
-                # 4. 更新内存摘要
+
+                # 4. 立即以 create_task 启动摘要生成，与下一个角色的流式输出并发执行
+                summary_task = asyncio.create_task(
+                    _generate_message_summary_with_settings(llm_settings, role_message["content"])
+                )
+                pending_summary_tasks.append((role_message["id"], summary_task))
+
+                # 5. 使用 content 更新内存摘要（摘要字段此时为空，不影响上下文构建）
                 memory_summary = _merge_memory_summary(memory_summary, [role_message])
                 base_result_payload = {
                     **base_result_payload,
@@ -1098,6 +1228,28 @@ async def _process_roundtable_task(task_id: str) -> None:
                     "memory_summary": memory_summary,
                 }
                 await _set_task_state(task_id, result_payload=base_result_payload)
+
+            # 6. 所有角色流式输出完成后，统一 gather 并发的摘要任务并回填消息
+            if pending_summary_tasks:
+                msg_id_to_idx: Dict[str, int] = {
+                    msg["id"]: idx for idx, msg in enumerate(current_messages)
+                }
+                summary_results = await asyncio.gather(
+                    *[task for _, task in pending_summary_tasks],
+                    return_exceptions=True,
+                )
+                summary_updated = False
+                for (m_id, _), result in zip(pending_summary_tasks, summary_results):
+                    if isinstance(result, Exception):
+                        continue
+                    idx = msg_id_to_idx.get(m_id)
+                    if idx is not None:
+                        current_messages[idx]["summary"] = result.get("summary", "")
+                        current_messages[idx]["summary_metrics"] = result.get("summary_metrics")
+                        summary_updated = True
+                if summary_updated:
+                    base_result_payload = {**base_result_payload, "messages": current_messages}
+                    await _set_task_state(task_id, result_payload=base_result_payload)
 
             if current_stage == "brief":
                 current_round += 1
@@ -1108,7 +1260,7 @@ async def _process_roundtable_task(task_id: str) -> None:
                 "id": temp_host_id,
                 "speaker_id": "host",
                 "speaker_name": "主持人",
-                "speaker_type": "agent",
+                "speaker_type": "host",
                 "content": "正在提炼共识并规划下一步...",
                 "streaming": True,
                 "created_at": _utcnow().isoformat(),
@@ -1204,7 +1356,7 @@ async def _process_roundtable_task(task_id: str) -> None:
                         "id": f"m_host_{uuid.uuid4().hex[:10]}",
                         "speaker_id": "host",
                         "speaker_name": "主持人",
-                        "speaker_type": "user",
+                        "speaker_type": "host",
                         "content": user_message,
                         "streaming": False,
                         "created_at": _utcnow().isoformat(),
@@ -1229,19 +1381,21 @@ async def _process_roundtable_task(task_id: str) -> None:
                     "id": f"m_host_{uuid.uuid4().hex[:10]}",
                     "speaker_id": "host",
                     "speaker_name": "主持人",
-                    "speaker_type": "user",
+                    "speaker_type": "host",
                     "content": user_message,
                     "streaming": False,
                     "created_at": _utcnow().isoformat(),
                 }
             )
             memory_summary = _merge_memory_summary(memory_summary, current_messages)
+            current_round += 1
             base_result_payload = {
                 **base_result_payload,
                 "messages": current_messages,
                 "last_user_message": user_message,
                 "next_prompt": next_prompt,
                 "memory_summary": memory_summary,
+                "auto_round_count": current_round,
             }
             await _set_task_state(task_id, result_payload=base_result_payload)
     except Exception as exc:
@@ -1256,7 +1410,7 @@ async def _process_roundtable_task(task_id: str) -> None:
             duration_ms=duration_ms,
         )
     finally:
-        TASK_STREAM_STATE_CACHE.pop(task_id, None)
+        await cache_delete(f"{TASK_STATE_PREFIX}{task_id}")
 
 
 async def _process_runtime_task(task_id: str) -> None:
@@ -1330,7 +1484,7 @@ async def _process_runtime_task(task_id: str) -> None:
             duration_ms=duration_ms,
         )
     finally:
-        TASK_STREAM_STATE_CACHE.pop(task_id, None)
+        await cache_delete(f"{TASK_STATE_PREFIX}{task_id}")
 
 
 async def _create_task_from_payload(
@@ -1352,7 +1506,7 @@ async def _create_task_from_payload(
     await db.commit()
     await db.refresh(task)
     serialized = _serialize_runtime_task(task)
-    TASK_STREAM_STATE_CACHE[task.task_id] = serialized
+    await cache_set(f"{TASK_STATE_PREFIX}{task.task_id}", serialized, ttl_seconds=TASK_STATE_TTL_SECONDS)
     await _publish_task_stream_event(task.task_id, "task.created", serialized)
     return task
 

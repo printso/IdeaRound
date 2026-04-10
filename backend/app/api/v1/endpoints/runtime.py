@@ -12,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 try:
     from backend.app.core.database import get_db, AsyncSessionLocal
+    from backend.app.core.auth import get_current_user
     from backend.app.models.runtime import RuntimeTask, RuntimeEvent
+    from backend.app.models.user import User
     from backend.app.schemas.runtime import (
         RuntimeTaskResponse, RuntimeTaskCreateRequest,
         RuntimeRoundtableRunRequest, RuntimeTaskCancelResponse,
@@ -23,7 +25,9 @@ try:
     from backend.app.services import runtime_service
 except ImportError:
     from app.core.database import get_db, AsyncSessionLocal
+    from app.core.auth import get_current_user
     from app.models.runtime import RuntimeTask, RuntimeEvent
+    from app.models.user import User
     from app.schemas.runtime import (
         RuntimeTaskResponse, RuntimeTaskCreateRequest,
         RuntimeRoundtableRunRequest, RuntimeTaskCancelResponse,
@@ -41,6 +45,7 @@ async def start_progress_evaluation(
     request: RuntimeTaskCreateRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     task = await runtime_service._create_task("progress_evaluation", request, db)
     background_tasks.add_task(runtime_service._process_runtime_task, task.task_id)
@@ -58,6 +63,7 @@ async def start_consensus_board(
     request: RuntimeTaskCreateRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     task = await runtime_service._create_task("consensus_board", request, db)
     background_tasks.add_task(runtime_service._process_runtime_task, task.task_id)
@@ -75,6 +81,7 @@ async def start_roundtable_run(
     request: RuntimeRoundtableRunRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     task = await runtime_service._create_task_from_payload(
         "roundtable_orchestration",
@@ -173,7 +180,16 @@ async def stream_runtime_task(task_id: str, request: Request):
         finally:
             runtime_service._unsubscribe_task_stream(task_id, queue)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            # 禁止 Nginx / CDN 等反向代理缓冲 SSE 响应，确保每条事件实时推送到客户端
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/rooms/{room_id}/snapshot", response_model=RuntimeRoomSnapshot)
@@ -240,7 +256,10 @@ async def get_room_runtime_snapshot(room_id: str, db: AsyncSession = Depends(get
 
 
 @router.post("/message-summaries", response_model=RuntimeMessageSummaryResponse)
-async def summarize_roundtable_messages(request: RuntimeMessageSummaryRequest):
+async def summarize_roundtable_messages(
+    request: RuntimeMessageSummaryRequest,
+    current_user: User = Depends(get_current_user),
+):
     return await runtime_service._summarize_message_batch(request)
 
 

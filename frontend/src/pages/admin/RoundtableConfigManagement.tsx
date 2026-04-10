@@ -13,6 +13,8 @@ import {
   Typography,
   message,
   Popconfirm,
+  Tabs,
+  Radio,
 } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -47,18 +49,58 @@ const RoundtableConfigManagement: React.FC = () => {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form] = Form.useForm<RoundtableConfigFormValues>();
+  
+  // 角色调度模式相关状态
+  const [schedulingModeId, setSchedulingModeId] = useState<number | null>(null);
+  const [schedulingMode, setSchedulingMode] = useState<string>('single_round_robin');
+  const [savingMode, setSavingMode] = useState(false);
 
   const fetchConfigs = async () => {
     setLoading(true);
     try {
       const response = await fetch('/api/v1/roundtable-configs/');
       if (!response.ok) throw new Error('Failed to fetch');
-      const data = await response.json();
+      const data: RoundtableConfig[] = await response.json();
       setConfigs(data);
+      
+      const modeConfig = data.find(c => c.config_key === 'role_scheduling_mode');
+      if (modeConfig) {
+        setSchedulingModeId(modeConfig.id);
+        setSchedulingMode(modeConfig.config_value || 'single_round_robin');
+      }
     } catch {
       message.error('加载圆桌配置失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveSchedulingMode = async () => {
+    setSavingMode(true);
+    try {
+      const payload = {
+        config_key: 'role_scheduling_mode',
+        config_value: schedulingMode,
+        description: '角色调度模式',
+        is_active: true,
+      };
+      
+      const url = schedulingModeId ? `/api/v1/roundtable-configs/${schedulingModeId}` : '/api/v1/roundtable-configs/';
+      const method = schedulingModeId ? 'PUT' : 'POST';
+
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) throw new Error('Failed to save mode');
+      message.success('调度模式已更新');
+      fetchConfigs();
+    } catch {
+      message.error('保存调度模式失败');
+    } finally {
+      setSavingMode(false);
     }
   };
 
@@ -184,21 +226,85 @@ const RoundtableConfigManagement: React.FC = () => {
 
   return (
     <>
-      <Card
-        extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
-            新建圆桌配置
-          </Button>
-        }
-      >
-        <Table
-          columns={columns}
-          dataSource={configs}
-          loading={loading}
-          rowKey="id"
-          pagination={{ pageSize: 20 }}
-        />
-      </Card>
+      <Tabs
+        defaultActiveKey="params"
+        items={[
+          {
+            key: 'params',
+            label: '参数配置',
+            children: (
+              <Card
+                extra={
+                  <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
+                    新建圆桌配置
+                  </Button>
+                }
+              >
+                <Table
+                  columns={columns}
+                  dataSource={configs}
+                  loading={loading}
+                  rowKey="id"
+                  pagination={{ pageSize: 20 }}
+                />
+              </Card>
+            ),
+          },
+          {
+            key: 'scheduling',
+            label: '角色调度模式',
+            children: (
+              <Card title="圆桌角色回复调度模式" style={{ maxWidth: 800 }}>
+                <div style={{ marginBottom: 24 }}>
+                  <Text type="secondary">
+                    配置圆桌空间中多个角色是如何发言的。此设置影响每次对话触发后，哪些角色将参与回复。
+                  </Text>
+                </div>
+                <Radio.Group
+                  value={schedulingMode}
+                  onChange={(e) => setSchedulingMode(e.target.value)}
+                  style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}
+                >
+                  <Radio value="sequential_all">
+                    <Space direction="vertical" size={2}>
+                      <Text strong>群聊模式（多角色依次回复）</Text>
+                      <Text type="secondary">每次触发时，所有选中角色都会按照顺序依次进行回复，形成一轮群聊脑暴。</Text>
+                    </Space>
+                  </Radio>
+                  <Radio value="single_round_robin">
+                    <Space direction="vertical" size={2}>
+                      <Text strong>轮询单角色回复（默认）</Text>
+                      <Text type="secondary">每次触发时，系统调度下一个角色单独进行回复。角色们一个一个轮流发言。</Text>
+                    </Space>
+                  </Radio>
+                  <Radio value="single_random">
+                    <Space direction="vertical" size={2}>
+                      <Text strong>随机单角色回复</Text>
+                      <Text type="secondary">每次触发时，系统随机抽取一个角色进行回复。</Text>
+                    </Space>
+                  </Radio>
+                  <Radio value="host_specify">
+                    <Space direction="vertical" size={2}>
+                      <Text strong>主持人指定下一位发言</Text>
+                      <Text type="secondary">由大模型扮演的主持人根据当前对话上下文，智能指定最适合接话的角色进行回复。</Text>
+                    </Space>
+                  </Radio>
+                </Radio.Group>
+                
+                <div style={{ marginTop: 32 }}>
+                  <Button
+                    type="primary"
+                    onClick={handleSaveSchedulingMode}
+                    loading={savingMode}
+                  >
+                    保存调度模式
+                  </Button>
+                </div>
+              </Card>
+            ),
+          },
+        ]}
+      />
 
       <Modal
         title={editingId !== null ? '编辑圆桌配置' : '新建圆桌配置'}

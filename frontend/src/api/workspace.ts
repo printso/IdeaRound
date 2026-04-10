@@ -72,10 +72,15 @@ export interface WorkspaceData {
     score?: number;
     reason?: string;
     reached?: boolean;
+    /** Server returns snake_case; kept for backward compat with camelCase */
+    consensus_count?: number;
+    resolved_pain_points?: number;
+    next_focus?: string;
+    updated_at?: string;
+    /** Legacy camelCase variants (used in older local state snapshots) */
     consensusCount?: number;
     resolvedPainPoints?: number;
     nextFocus?: string;
-    updated_at?: string;
   };
   consensus_board?: {
     summary?: string;
@@ -85,8 +90,11 @@ export interface WorkspaceData {
       pro: string;
       con: string;
     }>;
-    nextQuestions?: string[];
+    /** Server returns snake_case; kept for backward compat with camelCase */
+    next_questions?: string[];
     updated_at?: string;
+    /** Legacy camelCase variant */
+    nextQuestions?: string[];
   };
   canvas_snapshot?: Record<string, unknown> | null;
 }

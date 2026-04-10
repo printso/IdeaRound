@@ -21,3 +21,5 @@ pytesseract # For OCR
 python-jose[cryptography]  # JWT
 passlib[bcrypt]  # 密码加密
 bcrypt  # bcrypt 加密算法
+redis>=5.0  # Redis 异步客户端（缓存 + Pub/Sub）
+redis[asyncio]>=5.0 # Redis asyncio 支持

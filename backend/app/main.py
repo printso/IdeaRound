@@ -12,8 +12,9 @@ try:
         ExceptionHandlerMiddleware,
     )
     from backend.app.core.logger import app_logger
+    from backend.app.core.redis_client import init_redis, close_redis
     from backend.app.api.v1.api import api_router
-    # Import all models to ensure they are registered with SQLAlchemy
+    # 显式导入全部模型，确保 SQLAlchemy metadata 注册完整
     from backend.app.models.prompt import SysPrompt
     from backend.app.models.bot import Bot
     from backend.app.models.chat import ChatRoom, Message
@@ -22,6 +23,12 @@ try:
     from backend.app.models.workspace import Workspace
     from backend.app.models.runtime import RuntimeTask, RuntimeEvent
     from backend.app.models.search_engine import SearchEngineConfig
+    from backend.app.models.user import User
+    from backend.app.models.material import Material
+    from backend.app.models.role_template import RoleTemplate
+    from backend.app.models.roundtable_config import RoundtableConfig
+    from backend.app.models.style import StyleConfig
+    from backend.app.models.scenario_template import ScenarioTemplate
 except ImportError:
     from app.core.config import settings
     from app.core.database import engine, Base
@@ -31,8 +38,9 @@ except ImportError:
         ExceptionHandlerMiddleware,
     )
     from app.core.logger import app_logger
+    from app.core.redis_client import init_redis, close_redis
     from app.api.v1.api import api_router
-    # Import all models to ensure they are registered with SQLAlchemy
+    # 显式导入全部模型，确保 SQLAlchemy metadata 注册完整
     from app.models.prompt import SysPrompt
     from app.models.bot import Bot
     from app.models.chat import ChatRoom, Message
@@ -41,6 +49,12 @@ except ImportError:
     from app.models.workspace import Workspace
     from app.models.runtime import RuntimeTask, RuntimeEvent
     from app.models.search_engine import SearchEngineConfig
+    from app.models.user import User
+    from app.models.material import Material
+    from app.models.role_template import RoleTemplate
+    from app.models.roundtable_config import RoundtableConfig
+    from app.models.style import StyleConfig
+    from app.models.scenario_template import ScenarioTemplate
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -62,9 +76,14 @@ async def lifespan(app: FastAPI):
                     ))
         await conn.run_sync(_auto_migrate)
     app_logger.info("Database tables initialized")
+
+    redis_ok = await init_redis()
+    app_logger.info(f"Redis 初始化: {'成功' if redis_ok else '跳过（未配置或连接失败）'}")
+
     yield
+
+    await close_redis()
     app_logger.info("Shutting down IdeaRound API...")
-    # Cleanup if needed
 
 app = FastAPI(
     title="IdeaRound API",

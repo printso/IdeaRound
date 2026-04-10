@@ -1,17 +1,17 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RuntimeTaskCreateRequest(BaseModel):
-    room_id: str
+    room_id: str = Field(..., max_length=200)
     model_id: int
-    transcript: str
-    expected_result: str = ""
-    current_round: int = 0
+    transcript: str = Field(default="", max_length=50000)
+    expected_result: str = Field(default="", max_length=2000)
+    current_round: int = Field(default=0, ge=0, le=100)
     intent_card: Optional[Dict[str, str]] = None
-    trigger: Optional[str] = None
+    trigger: Optional[str] = Field(default=None, max_length=50)
 
 
 class RuntimeRoleRequest(BaseModel):
@@ -36,22 +36,22 @@ class RuntimeRoundtableMessageRequest(BaseModel):
 
 
 class RuntimeRoundtableRunRequest(BaseModel):
-    room_id: str
+    room_id: str = Field(..., max_length=200)
     model_id: int
-    user_message: str
-    user_message_id: Optional[str] = None
-    roundtable_stage: str = "brief"
+    user_message: str = Field(..., min_length=1, max_length=5000)
+    user_message_id: Optional[str] = Field(default=None, max_length=100)
+    roundtable_stage: str = Field(default="brief", pattern=r"^(brief|final)$")
     auto_brainstorm: bool = True
     auto_continue: bool = True
-    max_dialogue_rounds: int = 6
-    auto_round_count: int = 0
+    max_dialogue_rounds: int = Field(default=6, ge=1, le=30)
+    auto_round_count: int = Field(default=0, ge=0, le=100)
     intent_card: Optional[Dict[str, str]] = None
-    expected_result: str = ""
-    system_prompt: str = ""
+    expected_result: str = Field(default="", max_length=2000)
+    system_prompt: str = Field(default="", max_length=5000)
     prompt_templates: Optional[Dict[str, str]] = None
-    roles: List[RuntimeRoleRequest]
-    prior_messages: List[RuntimeRoundtableMessageRequest] = []
-    trigger: Optional[str] = None
+    roles: List[RuntimeRoleRequest] = Field(..., max_length=20)
+    prior_messages: List[RuntimeRoundtableMessageRequest] = Field(default=[], max_length=200)
+    trigger: Optional[str] = Field(default=None, max_length=50)
 
 
 class RuntimeTaskResponse(BaseModel):

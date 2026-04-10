@@ -1,5 +1,6 @@
 // Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
-import { Avatar, Button, Card, Col, Empty, List, Progress, Row, Space, Tag, Tooltip, Typography } from 'antd';
+import { memo, useCallback, useEffect, useRef } from 'react';
+import { Avatar, Button, Card, Col, Empty, Grid, List, Progress, Row, Space, Tag, Tooltip, Typography } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConsensusBoardState, JudgeState, RoundtableMessage } from '../../hooks/useWorkspace';
@@ -20,6 +21,90 @@ export interface StepRoundtableViewProps {
   onReplyViewModeChange: (mode: 'compact' | 'detailed') => void;
 }
 
+interface MessageItemProps {
+  item: RoundtableMessage;
+  isExpanded: boolean;
+  replyViewMode: 'compact' | 'detailed';
+  onToggleExpand: (id: string) => void;
+}
+
+const MessageItem = memo(function MessageItem({ item, isExpanded, replyViewMode, onToggleExpand }: MessageItemProps) {
+  const isHost = item.speakerType === 'host';
+  const canUseCompact = item.speakerType === 'agent' && replyViewMode === 'compact';
+  const displayContent = canUseCompact && !isExpanded
+    ? (item.summary?.trim() || (item.summaryStatus === 'loading' ? '正在提炼核心要点...' : item.content || '正在思考...'))
+    : (item.content || '正在思考...');
+
+  return (
+    <List.Item
+      style={{
+        border: 'none',
+        justifyContent: isHost ? 'center' : item.speakerType === 'user' ? 'flex-end' : 'flex-start',
+        padding: '8px 0',
+      }}
+    >
+      <Space align="start" style={{ width: isHost ? '100%' : '100%', maxWidth: '100%', justifyContent: isHost ? 'center' : undefined }}>
+        {!isHost && item.speakerType !== 'user' && (
+          <Avatar style={{ background: '#52c41a' }}>{item.speakerName.slice(0, 1)}</Avatar>
+        )}
+        {isHost && (
+          <Avatar style={{ background: '#faad14', fontSize: 12 }}>主持</Avatar>
+        )}
+        <Card
+          size="small"
+          style={{
+            maxWidth: isHost ? '80%' : '100%',
+            width: '100%',
+            borderRadius: 10,
+            border: isHost ? '1px solid #ffd666' : item.speakerType === 'user' ? '1px solid #1677ff' : '1px solid #f0f0f0',
+            background: isHost ? '#fffbe6' : item.speakerType === 'user' ? '#e6f4ff' : '#ffffff',
+          }}
+        >
+          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space wrap>
+                <Text strong>{item.speakerName}</Text>
+                {isHost && <Tag color="gold">调度</Tag>}
+                {item.streaming && <Tag color="processing">流式中</Tag>}
+                {canUseCompact && !isExpanded && <Tag color="blue">精简模式</Tag>}
+                {canUseCompact && isExpanded && <Tag color="gold">原文展开</Tag>}
+              </Space>
+              <Text type="secondary">{item.createdAt}</Text>
+            </Space>
+            {canUseCompact && (
+              <Space size={4} wrap>
+                <Button
+                  type="link"
+                  size="small"
+                  style={{ paddingInline: 0 }}
+                  onClick={() => onToggleExpand(item.id)}
+                >
+                  {isExpanded ? '收起原文' : '展开原文'}
+                </Button>
+                {typeof item.summaryMetrics?.semantic_consistency === 'number' && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    语义一致性 {item.summaryMetrics.semantic_consistency}%
+                  </Text>
+                )}
+                {item.summaryStatus === 'loading' && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    摘要生成中
+                  </Text>
+                )}
+              </Space>
+            )}
+            <div className="roundtable-reply-content">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {displayContent}
+              </ReactMarkdown>
+            </div>
+          </Space>
+        </Card>
+      </Space>
+    </List.Item>
+  );
+});
+
 export function StepRoundtableView({
   roomReady,
   messages,
@@ -33,9 +118,26 @@ export function StepRoundtableView({
   onToggleExpandedMessage,
   onReplyViewModeChange,
 }: StepRoundtableViewProps) {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
+
+  const handleToggle = useCallback((id: string) => {
+    onToggleExpandedMessage(id);
+  }, [onToggleExpandedMessage]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage?.streaming || lastMessage?.speakerType === 'agent') {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [messages]);
+
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-      <Row gutter={16} style={{ flex: 1, minHeight: 0, overflow: 'visible' }}>
+      <Row gutter={[16, 16]} style={{ flex: 1, minHeight: 0, overflow: 'visible' }}>
         <Col xs={24} xl={17} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'hidden' }}>
           <Card
             title={
@@ -70,82 +172,22 @@ export function StepRoundtableView({
           >
             {!roomReady && <Empty description="请先完成需求识别与角色确认" />}
             {roomReady && (
-              <div style={{ flex: 1, minHeight: 0, maxHeight: 'calc(100vh - 350px)', overflowY: 'auto', padding: '0 16px 16px', overflowX: 'hidden' }}>
+              <div
+                ref={scrollContainerRef}
+                style={{ flex: 1, minHeight: 0, maxHeight: isMobile ? 'calc(100dvh - 300px)' : 'calc(100vh - 350px)', overflowY: 'auto', padding: isMobile ? '0 8px 8px' : '0 16px 16px', overflowX: 'hidden' }}
+              >
                 {messages.length === 0 && <Empty description="暂无讨论内容，先在底部输入并发送" />}
                 <List
                   dataSource={messages}
-                  renderItem={(item) => {
-                    const isExpanded = expandedMessageIds.includes(item.id);
-                    const canUseCompact = item.speakerType === 'agent' && replyViewMode === 'compact';
-                    const displayContent = canUseCompact && !isExpanded
-                      ? (item.summary?.trim() || (item.summaryStatus === 'loading' ? '正在提炼核心要点...' : item.content || '正在思考...'))
-                      : (item.content || '正在思考...');
-
-                    return (
-                      <List.Item
-                        style={{
-                          border: 'none',
-                          justifyContent: item.speakerType === 'user' ? 'flex-end' : 'flex-start',
-                          padding: '8px 0',
-                        }}
-                      >
-                        <Space align="start" style={{ width: '100%', maxWidth: '100%' }}>
-                          {item.speakerType !== 'user' && (
-                            <Avatar style={{ background: '#52c41a' }}>{item.speakerName.slice(0, 1)}</Avatar>
-                          )}
-                          <Card
-                            size="small"
-                            style={{
-                              maxWidth: '100%',
-                              width: '100%',
-                              borderRadius: 10,
-                              border: item.speakerType === 'user' ? '1px solid #1677ff' : '1px solid #f0f0f0',
-                              background: item.speakerType === 'user' ? '#e6f4ff' : '#ffffff',
-                            }}
-                          >
-                            <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                                <Space wrap>
-                                  <Text strong>{item.speakerName}</Text>
-                                  {item.streaming && <Tag color="processing">流式中</Tag>}
-                                  {canUseCompact && !isExpanded && <Tag color="blue">精简模式</Tag>}
-                                  {canUseCompact && isExpanded && <Tag color="gold">原文展开</Tag>}
-                                </Space>
-                                <Text type="secondary">{item.createdAt}</Text>
-                              </Space>
-                              {canUseCompact && (
-                                <Space size={4} wrap>
-                                  <Button
-                                    type="link"
-                                    size="small"
-                                    style={{ paddingInline: 0 }}
-                                    onClick={() => onToggleExpandedMessage(item.id)}
-                                  >
-                                    {isExpanded ? '收起原文' : '展开原文'}
-                                  </Button>
-                                  {typeof item.summaryMetrics?.semantic_consistency === 'number' && (
-                                    <Text type="secondary" style={{ fontSize: 12 }}>
-                                      语义一致性 {item.summaryMetrics.semantic_consistency}%
-                                    </Text>
-                                  )}
-                                  {item.summaryStatus === 'loading' && (
-                                    <Text type="secondary" style={{ fontSize: 12 }}>
-                                      摘要生成中
-                                    </Text>
-                                  )}
-                                </Space>
-                              )}
-                              <div className="roundtable-reply-content">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                  {displayContent}
-                                </ReactMarkdown>
-                              </div>
-                            </Space>
-                          </Card>
-                        </Space>
-                      </List.Item>
-                    );
-                  }}
+                  renderItem={(item) => (
+                    <MessageItem
+                      key={item.id}
+                      item={item}
+                      isExpanded={expandedMessageIds.includes(item.id)}
+                      replyViewMode={replyViewMode}
+                      onToggleExpand={handleToggle}
+                    />
+                  )}
                 />
               </div>
             )}
@@ -187,7 +229,7 @@ export function StepRoundtableView({
               </Space>
             }
             style={{ borderRadius: 8 }}
-            bodyStyle={{ maxHeight: 'calc(100vh - 420px)', overflowY: 'auto' }}
+            bodyStyle={{ maxHeight: isMobile ? 300 : 'calc(100vh - 420px)', overflowY: 'auto' }}
           >
             <Space direction="vertical" size={10} style={{ width: '100%' }}>
               <Text>{consensusBoard.summary || '书记员正在整理当前共识与争议...'}</Text>

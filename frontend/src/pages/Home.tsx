@@ -1,5 +1,5 @@
 // Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
-import { Button, Dropdown, Col, Form, Input, Layout, List, Modal, Row, Space, Tag, Typography, message } from 'antd';
+import { Button, Dropdown, Col, Form, Grid, Input, Layout, List, Modal, Row, Space, Tag, Typography, message } from 'antd';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -58,8 +58,8 @@ import { StepDemandRecognition } from './home/StepDemandRecognition';
 import { StepRoleMatrix } from './home/StepRoleMatrix';
 import { StepRoundtableView } from './home/StepRoundtableView';
 import { RoleModals } from './home/RoleModals';
-
 import { ExpertModeConfig } from './home/ExpertModeConfig';
+import './Home.css';
 
 function Home() {
   const { isAuthenticated, user } = useAuth();
@@ -89,65 +89,7 @@ function Home() {
     canvasSnapshot, setCanvasSnapshot,
   } = workspaceState;
 
-  // 添加自定义样式用于列表项hover效果和菜单
-  const listItemStyle = `
-    .roundtable-list-item {
-      transition: all 0.2s ease-in-out;
-    }
-    .roundtable-list-item:hover {
-      background: #fafafa !important;
-      border-color: #d9d9d9 !important;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
-      transform: translateY(-1px);
-    }
-    .roundtable-list-item.selected:hover {
-      background: linear-gradient(135deg, #e6f4ff 0%, #d4ebff 100%) !important;
-      border-color: #91caff !important;
-      boxShadow: 0 4px 12px rgba(22, 119, 255, 0.16) !important;
-      transform: translateY(-1px);
-    }
-    /* 自定义下拉菜单样式 */
-    .roundtable-settings-menu .ant-dropdown-menu {
-      border-radius: 8px;
-      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
-      border: 1px solid #f0f0f0;
-      padding: 4px 0;
-    }
-    .roundtable-settings-menu .ant-dropdown-menu-item {
-      padding: 8px 12px;
-      font-size: 13px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .roundtable-settings-menu .ant-dropdown-menu-item:hover {
-      background-color: #f5f5f5;
-    }
-    .roundtable-settings-menu .ant-dropdown-menu-item-danger {
-      color: #ff4d4f;
-    }
-    .roundtable-settings-menu .ant-dropdown-menu-item-danger:hover {
-      background-color: #fff2f0;
-    }
-    /* 三点按钮悬停效果 */
-    .roundtable-settings-button {
-      opacity: 0.7;
-    }
-    .roundtable-list-item:hover .roundtable-settings-button,
-    .roundtable-settings-button:hover {
-      opacity: 1;
-      background-color: rgba(0, 0, 0, 0.04);
-      color: #1677ff !important;
-    }
-    .roundtable-list-item.selected .roundtable-settings-button:hover {
-      background-color: rgba(22, 119, 255, 0.1);
-    }
-    .roundtable-reply-content {
-      transition: opacity 0.18s ease, transform 0.18s ease;
-      opacity: 1;
-      transform: translateY(0);
-    }
-  `;
+  // CSS 已提取到 Home.css
 
   const [models, setModels] = useState<LLMConfig[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
@@ -202,6 +144,9 @@ function Home() {
   const pendingSummaryIdsRef = useRef<Set<string>>(new Set());
   const trackedReplyModeKeyRef = useRef<string>('');
   const [form] = Form.useForm();
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
+  const [siderDrawerOpen, setSiderDrawerOpen] = useState(false);
 
   // 生成基于意图洞察的摘要标题
   const generateIntentSummaryTitle = async (intentData: {
@@ -373,13 +318,18 @@ function Home() {
     if (!payload) {
       return;
     }
+    // 兼容服务端 snake_case（consensus_count / resolved_pain_points / next_focus）
+    // 和运行时任务 payload 的 camelCase（consensusCount / resolvedPainPoints / nextFocus）
+    const rawConsensusCount = payload.consensus_count ?? payload.consensusCount;
+    const rawResolvedPainPoints = payload.resolved_pain_points ?? payload.resolvedPainPoints;
+    const rawNextFocus = payload.next_focus ?? payload.nextFocus;
     const nextState: JudgeState = {
       score: Number(payload.score) || 0,
       reason: typeof payload.reason === 'string' ? payload.reason : '',
       reached: Boolean(payload.reached),
-      consensusCount: Number(payload.consensusCount) || 0,
-      resolvedPainPoints: Number(payload.resolvedPainPoints) || 0,
-      nextFocus: typeof payload.nextFocus === 'string' ? payload.nextFocus : '',
+      consensusCount: Number(rawConsensusCount) || 0,
+      resolvedPainPoints: Number(rawResolvedPainPoints) || 0,
+      nextFocus: typeof rawNextFocus === 'string' ? rawNextFocus : '',
       updatedAt: new Date().toISOString(),
     };
     setJudgeState(nextState);
@@ -391,11 +341,15 @@ function Home() {
     if (!payload) {
       return;
     }
+    // 兼容服务端 snake_case next_questions 和运行时 camelCase nextQuestions
+    const rawNextQuestions = Array.isArray(payload.next_questions)
+      ? (payload.next_questions as string[])
+      : (Array.isArray(payload.nextQuestions) ? (payload.nextQuestions as string[]) : []);
     setConsensusBoard({
       summary: typeof payload.summary === 'string' ? payload.summary : '',
       consensus: Array.isArray(payload.consensus) ? payload.consensus as string[] : [],
       disputes: Array.isArray(payload.disputes) ? payload.disputes as BoardDispute[] : [],
-      nextQuestions: Array.isArray(payload.nextQuestions) ? payload.nextQuestions as string[] : [],
+      nextQuestions: rawNextQuestions,
       updatedAt: new Date().toISOString(),
     });
   }, []);
@@ -413,6 +367,72 @@ function Home() {
       console.error('加载运行时快照失败:', error);
     }
   }, [applyBoardResult, applyJudgeResult]);
+
+  /**
+   * 主持人消息发送后，从服务器拉取完整的工作台状态并同步到前端。
+   * 仅刷新运行时相关字段（消息列表、评审状态、共识面板、画布），
+   * 不覆盖用户主动设置的步骤、模型、角色等配置。
+   * 设置 suppressBackendSaveRef 避免刷新后触发反向回写。
+   */
+  const refreshWorkspaceFromServer = useCallback(async (targetRoomId: string) => {
+    if (!isAuthenticated || !targetRoomId) {
+      return;
+    }
+    suppressBackendSaveRef.current = true;
+    try {
+      const workspace = await getWorkspace(targetRoomId);
+      if (!workspace?.data) {
+        return;
+      }
+      const { data } = workspace;
+
+      if (Array.isArray(data.messages) && data.messages.length > 0) {
+        setMessages(
+          data.messages.map((msg) =>
+            normalizeRoundtableMessage(msg as unknown as Record<string, unknown>),
+          ),
+        );
+      }
+      if (data.judge_state) {
+        applyJudgeResult(data.judge_state as unknown as Record<string, unknown>);
+      }
+      if (data.consensus_board) {
+        applyBoardResult(data.consensus_board as unknown as Record<string, unknown>);
+      }
+      if (Array.isArray(data.canvas_consensus)) {
+        setCanvasConsensus(data.canvas_consensus);
+      }
+      if (Array.isArray(data.canvas_disputes)) {
+        setCanvasDisputes(data.canvas_disputes);
+      }
+      if (data.canvas_updated_at) {
+        setCanvasUpdatedAt(data.canvas_updated_at);
+      }
+      if (data.roundtable_stage === 'brief' || data.roundtable_stage === 'final') {
+        setRoundtableStage(data.roundtable_stage as RoundtableStage);
+      }
+      if (typeof data.auto_round_count === 'number') {
+        setAutoRoundCount(data.auto_round_count);
+      }
+    } catch (error) {
+      console.error('从服务器刷新工作台状态失败:', error);
+    } finally {
+      // 延迟释放，让 React 批量 setState 先完成再允许回写
+      setTimeout(() => {
+        suppressBackendSaveRef.current = false;
+      }, 300);
+    }
+  }, [
+    isAuthenticated,
+    applyBoardResult,
+    applyJudgeResult,
+    setMessages,
+    setCanvasConsensus,
+    setCanvasDisputes,
+    setCanvasUpdatedAt,
+    setRoundtableStage,
+    setAutoRoundCount,
+  ]);
 
   const applyRoundtableTaskPayload = useCallback((payload?: Record<string, unknown> | null) => {
     if (!payload) {
@@ -486,6 +506,11 @@ function Home() {
             activeRoundtableTaskIdRef.current = null;
             roundtableStreamAbortRef.current = null;
             void refreshRuntimeSnapshot(task.room_id);
+            // 主持人消息对应任务结束后，从服务器全量同步工作台状态，
+            // 确保消息列表、评审评分、共识面板与后端保持一致
+            if (task.room_id) {
+              void refreshWorkspaceFromServer(task.room_id);
+            }
           }
         },
         onDone: () => {
@@ -501,7 +526,7 @@ function Home() {
       },
       { signal: controller.signal },
     );
-  }, [applyRoundtableTaskPayload, refreshRuntimeSnapshot]);
+  }, [applyRoundtableTaskPayload, refreshRuntimeSnapshot, refreshWorkspaceFromServer]);
 
   const loadWorkspaces = async () => {
     if (!isAuthenticated) {
@@ -562,9 +587,10 @@ function Home() {
       score: data.judge_state?.score || 0,
       reason: data.judge_state?.reason || '',
       reached: data.judge_state?.reached || false,
-      consensusCount: data.judge_state?.consensusCount || 0,
-      resolvedPainPoints: data.judge_state?.resolvedPainPoints || 0,
-      nextFocus: data.judge_state?.nextFocus || '',
+      // 兼容服务端 snake_case 和本地快照 camelCase
+      consensusCount: data.judge_state?.consensus_count ?? data.judge_state?.consensusCount ?? 0,
+      resolvedPainPoints: data.judge_state?.resolved_pain_points ?? data.judge_state?.resolvedPainPoints ?? 0,
+      nextFocus: data.judge_state?.next_focus ?? data.judge_state?.nextFocus ?? '',
       updatedAt: data.judge_state?.updated_at,
     });
     setJudgeScore(data.judge_state?.score || 0);
@@ -573,7 +599,8 @@ function Home() {
       summary: data.consensus_board?.summary || '',
       consensus: data.consensus_board?.consensus || [],
       disputes: data.consensus_board?.disputes || [],
-      nextQuestions: data.consensus_board?.nextQuestions || [],
+      // 兼容服务端 snake_case next_questions 和旧版 camelCase nextQuestions
+      nextQuestions: data.consensus_board?.next_questions ?? data.consensus_board?.nextQuestions ?? [],
       updatedAt: data.consensus_board?.updated_at,
     });
     setCanvasSnapshot((data.canvas_snapshot as Record<string, unknown>) || null);
@@ -1671,6 +1698,7 @@ ${JSON.stringify(roleCandidates, null, 2)}
   };
 
   const createNewRoundtable = () => {
+    setSiderDrawerOpen(false);
     setStep('roundtable');
     setRoomReady(false);
     setRoomId('');
@@ -1700,6 +1728,7 @@ ${JSON.stringify(roleCandidates, null, 2)}
   };
 
   const selectRoundtableRoom = async (room: RoundtableRoom) => {
+    setSiderDrawerOpen(false);
     suppressBackendSaveRef.current = true;
     setRoomId(room.id);
     setStep('roundtable_view');
@@ -2005,7 +2034,6 @@ ${JSON.stringify(roleCandidates, null, 2)}
 
   return (
     <>
-      <style dangerouslySetInnerHTML={{ __html: listItemStyle }} />
       <Layout style={{ minHeight: '100dvh', overflow: 'hidden' }}>
       <AppHeader
         models={models}
@@ -2018,10 +2046,35 @@ ${JSON.stringify(roleCandidates, null, 2)}
         onWorkspaceStepChange={(key) => setStep(key as StepKey)}
         canGoRoles={canGoRoles}
         roomReady={roomReady}
+        isMobile={isMobile}
+        onMenuToggle={() => setSiderDrawerOpen(true)}
       />
 
       <Layout style={{ overflow: 'hidden', height: 'calc(100dvh - 64px)' }}>
-        <Sider width={220} style={{ background: '#fff', borderRight: '1px solid #f0f0f0' }}>
+        {isMobile && siderDrawerOpen && (
+          <div
+            className="mobile-sider-backdrop"
+            onClick={() => setSiderDrawerOpen(false)}
+            style={{ position: 'fixed', inset: 0, top: 64, background: 'rgba(0,0,0,0.45)', zIndex: 99, transition: 'opacity 0.3s' }}
+          />
+        )}
+        <Sider
+          width={isMobile ? 280 : 220}
+          style={{
+            background: '#fff',
+            borderRight: '1px solid #f0f0f0',
+            ...(isMobile ? {
+              position: 'fixed',
+              top: 64,
+              left: 0,
+              bottom: 0,
+              zIndex: 100,
+              transform: siderDrawerOpen ? 'translateX(0)' : 'translateX(-100%)',
+              transition: 'transform 0.3s cubic-bezier(0.23, 1, 0.32, 1)',
+              boxShadow: siderDrawerOpen ? '6px 0 16px rgba(0,0,0,0.12)' : 'none',
+            } : {}),
+          }}
+        >
           <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0' }}>
             <Space direction="vertical" size="small" style={{ width: '100%' }}>
               <Button type="primary" icon={<span>+</span>} onClick={createNewRoundtable} block>
@@ -2176,7 +2229,7 @@ ${JSON.stringify(roleCandidates, null, 2)}
         </Sider>
 
         <Layout style={{ background: '#f5f5f5', overflow: 'hidden' }}>
-          <Content style={{ padding: 16, flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <Content style={{ padding: isMobile ? 8 : 16, flex: 1, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column' }}>
             {step === 'roundtable' && !isExpertMode && (
               <StepDemandRecognition
                 initialDemand={initialDemand}
@@ -2416,56 +2469,54 @@ ${JSON.stringify(roleCandidates, null, 2)}
           </Content>
 
           {step !== 'canvas_view' && (
-            <Footer style={{ background: '#ffffff', borderTop: '1px solid #f0f0f0', marginTop: 5 }}>
-              {/* 圆桌空间显示状态标签 */}
+            <Footer style={{ background: '#ffffff', borderTop: '1px solid #f0f0f0', marginTop: 5, padding: isMobile ? '12px 8px' : undefined }}>
               {step !== 'roundtable' && (
-              <Row justify="space-between" align="middle">
-                <Col>
-                  <Text type="secondary">
+              <Row justify="space-between" align="middle" wrap>
+                <Col xs={24} md={12}>
+                  <Text type="secondary" style={{ fontSize: isMobile ? 12 : 14 }}>
                     先完成意图洞察与角色确认，再进入圆桌空间开始群聊脑暴。
                   </Text>
                 </Col>
-                <Col>
-                  <Space>
-                    <Tag color={intentReady ? 'green' : 'default'}>意图洞察 {intentReady ? '已完成' : '未完成'}</Tag>
-                    <Tag color={rolesReady ? 'green' : 'default'}>角色矩阵 {rolesReady ? '已完成' : '未完成'}</Tag>
+                <Col xs={24} md={12} style={{ textAlign: isMobile ? 'left' : 'right', marginTop: isMobile ? 4 : 0 }}>
+                  <Space wrap size={4}>
+                    <Tag color={intentReady ? 'green' : 'default'}>意图洞察 {intentReady ? '✓' : '○'}</Tag>
+                    <Tag color={rolesReady ? 'green' : 'default'}>角色矩阵 {rolesReady ? '✓' : '○'}</Tag>
                   </Space>
                 </Col>
               </Row>
               )}
-              {/* 圆桌空间显示输入框 */}
               {(step === 'roundtable_view') && (
-              <Row gutter={12} align="middle">
-                <Col flex="auto">
-                  <Space direction="vertical" style={{ width: '100%' }}>
-                    <Space style={{ marginBottom: 8 }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>🎤 主持人干预：</Text>
-                      <Button size="small" onClick={() => applyHostAction('focus')}>🎯 跑题拉回</Button>
-                      <Button size="small" onClick={() => applyHostAction('conflict')}>⚔️ 加大对抗</Button>
-                      <Button size="small" onClick={() => setNewIdeaModalOpen(true)}>💡 提新点子</Button>
-                      <Button size="small" onClick={() => applyHostAction('summarize')} danger>🛑 直接总结</Button>
-                    </Space>
+              <div>
+                <Space wrap size={4} style={{ marginBottom: 8 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>🎤 主持人干预：</Text>
+                  <Button size="small" onClick={() => applyHostAction('focus')}>🎯 拉回</Button>
+                  <Button size="small" onClick={() => applyHostAction('conflict')}>⚔️ 对抗</Button>
+                  <Button size="small" onClick={() => setNewIdeaModalOpen(true)}>💡 新点子</Button>
+                  <Button size="small" onClick={() => applyHostAction('summarize')} danger>🛑 总结</Button>
+                </Space>
+                <Row gutter={8} align="bottom">
+                  <Col flex="auto">
                     <Input.TextArea
-                      rows={3}
+                      rows={isMobile ? 2 : 3}
                       maxLength={1000}
                       showCount
                       value={userPrompt}
                       onChange={(e) => setUserPrompt(e.target.value)}
-                      placeholder="输入你的观点/问题（你是特殊角色，可通过系统提示词纠偏整个圆桌）"
+                      placeholder={isMobile ? '输入观点/问题...' : '输入你的观点/问题（你是特殊角色，可通过系统提示词纠偏整个圆桌）'}
                     />
-                  </Space>
-                </Col>
-                <Col>
-                  <Space direction="vertical">
-                    <Button type="primary" loading={sending} onClick={() => void sendToRoundtable()}>
-                      发送
-                    </Button>
-                    <Button disabled={!sending} onClick={stopStreaming}>
-                      停止
-                    </Button>
-                  </Space>
-                </Col>
-              </Row>
+                  </Col>
+                  <Col>
+                    <Space direction={isMobile ? 'horizontal' : 'vertical'} size={4}>
+                      <Button type="primary" loading={sending} onClick={() => void sendToRoundtable()}>
+                        发送
+                      </Button>
+                      <Button disabled={!sending} onClick={stopStreaming}>
+                        停止
+                      </Button>
+                    </Space>
+                  </Col>
+                </Row>
+              </div>
               )}
             </Footer>
           )}

@@ -1,6 +1,6 @@
 // Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
 import { AppstoreAddOutlined, PlusOutlined } from '@ant-design/icons';
-import { Button, Card, Col, Divider, InputNumber, Row, Space, Switch, Tag, Typography } from 'antd';
+import { Button, Card, Col, Divider, Grid, InputNumber, Row, Space, Switch, Tag, Typography } from 'antd';
 import type { IntentCardState, RoleMember } from '../../hooks/useWorkspace';
 
 const { Paragraph, Text } = Typography;
@@ -43,9 +43,12 @@ export function StepRoleMatrix({
   onAutoBrainstormChange,
   onConfirmRoles,
 }: StepRoleMatrixProps) {
+  const screens = Grid.useBreakpoint();
+  const isNarrow = !screens.lg;
+
   return (
-    <Row gutter={24} style={{ maxWidth: 1200, margin: '0 auto', width: '100%' }}>
-      <Col xs={24} xl={14}>
+    <div style={{ display: 'flex', flexDirection: isNarrow ? 'column' : 'row', gap: isNarrow ? 16 : 24, alignItems: 'stretch', width: '100%' }}>
+      <div style={{ flex: '1 1 0', minWidth: 0 }}>
         <Card
           title={
             <Space style={{ width: '100%', justifyContent: 'space-between' }}>
@@ -127,8 +130,8 @@ export function StepRoleMatrix({
             </Space>
           )}
         </Card>
-      </Col>
-      <Col xs={24} xl={10}>
+      </div>
+      <div style={{ width: isNarrow ? '100%' : 340, flexShrink: 0 }}>
         <Card title="确认与启动" style={{ borderRadius: 8 }}>
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <Card size="small">
@@ -150,7 +153,7 @@ export function StepRoleMatrix({
               </Space>
             <Space style={{ width: '100%', justifyContent: 'space-between' }}>
               <Text>群聊模式（多角色脑暴）</Text>
-              <Switch checked={autoBrainstorm} onChange={onAutoBrainstormChange} />
+              <Switch checked={autoBrainstorm} onChange={onAutoBrainstormChange} disabled title="已由系统后台调度模式接管" />
             </Space>
             <Button type="primary" onClick={onConfirmRoles} disabled={!intentReady}>
               确认角色并创建圆桌空间
@@ -160,7 +163,7 @@ export function StepRoleMatrix({
             </Text>
           </Space>
         </Card>
-      </Col>
-    </Row>
+      </div>
+    </div>
   );
 }

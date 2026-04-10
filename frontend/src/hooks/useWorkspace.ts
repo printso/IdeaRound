@@ -72,7 +72,7 @@ export type RoundtableMessage = {
   id: string;
   speakerId: string;
   speakerName: string;
-  speakerType: 'user' | 'agent';
+  speakerType: 'user' | 'agent' | 'host';
   content: string;
   summary?: string;
   summaryMetrics?: MessageSummaryMetrics | null;
@@ -100,7 +100,7 @@ export const normalizeRoundtableMessage = (msg: Record<string, unknown>): Roundt
   id: String(msg.id || ''),
   speakerId: String(msg.speaker_id || msg.speakerId || ''),
   speakerName: String(msg.speaker_name || msg.speakerName || ''),
-  speakerType: (msg.speaker_type || msg.speakerType || 'agent') as 'user' | 'agent',
+  speakerType: (msg.speaker_type || msg.speakerType || 'agent') as 'user' | 'agent' | 'host',
   content: String(msg.content || ''),
   summary: typeof msg.summary === 'string' ? msg.summary : undefined,
   summaryMetrics: normalizeSummaryMetrics(msg.summary_metrics || msg.summaryMetrics),

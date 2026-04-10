@@ -177,6 +177,12 @@ DEFAULT_ROUNDTABLE_CONFIGS = [
         "max_value": 5.0,
         "is_active": True,
     },
+    {
+        "config_key": "role_scheduling_mode",
+        "config_value": "single_round_robin",
+        "description": "角色调度模式",
+        "is_active": True,
+    },
     # 提示词模板配置
     {
         "config_key": "prompt_base",

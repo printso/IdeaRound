@@ -1,0 +1,143 @@
+/* Home 页面专用样式 */
+
+.roundtable-list-item {
+  transition: all 0.2s ease-in-out;
+}
+
+.roundtable-list-item:hover {
+  background: #fafafa !important;
+  border-color: #d9d9d9 !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
+  transform: translateY(-1px);
+}
+
+.roundtable-list-item.selected:hover {
+  background: linear-gradient(135deg, #e6f4ff 0%, #d4ebff 100%) !important;
+  border-color: #91caff !important;
+  box-shadow: 0 4px 12px rgba(22, 119, 255, 0.16) !important;
+  transform: translateY(-1px);
+}
+
+.roundtable-settings-menu .ant-dropdown-menu {
+  border-radius: 8px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+  border: 1px solid #f0f0f0;
+  padding: 4px 0;
+}
+
+.roundtable-settings-menu .ant-dropdown-menu-item {
+  padding: 8px 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.roundtable-settings-menu .ant-dropdown-menu-item:hover {
+  background-color: #f5f5f5;
+}
+
+.roundtable-settings-menu .ant-dropdown-menu-item-danger {
+  color: #ff4d4f;
+}
+
+.roundtable-settings-menu .ant-dropdown-menu-item-danger:hover {
+  background-color: #fff2f0;
+}
+
+.roundtable-settings-button {
+  opacity: 0.7;
+}
+
+.roundtable-list-item:hover .roundtable-settings-button,
+.roundtable-settings-button:hover {
+  opacity: 1;
+  background-color: rgba(0, 0, 0, 0.04);
+  color: #1677ff !important;
+}
+
+.roundtable-list-item.selected .roundtable-settings-button:hover {
+  background-color: rgba(22, 119, 255, 0.1);
+}
+
+.roundtable-reply-content {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ========== 响应式适配：平板（<992px） ========== */
+@media (max-width: 991px) {
+  .ant-layout-header {
+    padding-inline: 12px !important;
+  }
+
+  .ant-layout-footer {
+    padding: 12px !important;
+  }
+}
+
+/* ========== 响应式适配：移动端（<768px） ========== */
+@media (max-width: 767px) {
+  .ant-layout-header {
+    height: 56px !important;
+    line-height: 56px !important;
+    padding-inline: 8px !important;
+  }
+
+  .mobile-sider-backdrop {
+    top: 56px !important;
+  }
+
+  .ant-layout-header .ant-menu-horizontal {
+    font-size: 13px;
+  }
+
+  .ant-layout-header .ant-menu-horizontal > .ant-menu-item,
+  .ant-layout-header .ant-menu-horizontal > .ant-menu-overflow-item {
+    padding-inline: 8px !important;
+    font-size: 13px;
+  }
+
+  .ant-card-head-title {
+    font-size: 14px !important;
+  }
+
+  .ant-card-body {
+    padding: 12px !important;
+  }
+
+  .roundtable-reply-content {
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .roundtable-reply-content pre {
+    overflow-x: auto;
+    max-width: calc(100vw - 80px);
+    font-size: 12px;
+  }
+
+  .roundtable-reply-content table {
+    display: block;
+    overflow-x: auto;
+    max-width: calc(100vw - 80px);
+    font-size: 13px;
+  }
+
+  .roundtable-list-item {
+    padding: 8px 12px !important;
+    margin-bottom: 4px !important;
+  }
+}
+
+/* ========== 响应式适配：超小屏（<480px） ========== */
+@media (max-width: 479px) {
+  .ant-card-body {
+    padding: 8px !important;
+  }
+
+  .ant-layout-footer {
+    padding: 8px 6px !important;
+  }
+}

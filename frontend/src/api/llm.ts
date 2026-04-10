@@ -81,12 +81,17 @@ export const streamChatByLLMConfig = async (
   options?: { signal?: AbortSignal }
 ) => {
   try {
+    const streamBody = JSON.stringify(request);
     const response = await fetch(buildApiUrl(`/llm/${configId}/chat/stream`), {
       method: 'POST',
-      headers: buildRequestHeaders({
-        body: JSON.stringify(request),
-      }),
-      body: JSON.stringify(request),
+      headers: (() => {
+        const headers = buildRequestHeaders({
+          body: streamBody,
+        });
+        headers.set('Accept', 'text/event-stream');
+        return headers;
+      })(),
+      body: streamBody,
       signal: options?.signal,
     });
 
@@ -109,29 +114,40 @@ export const streamChatByLLMConfig = async (
         break;
       }
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() || '';
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const dataStr = line.slice(6);
-          if (dataStr === '[DONE]') {
-            callbacks.onDone();
+      for (const eventChunk of events) {
+        const lines = eventChunk.split(/\r?\n/);
+        const dataLines: string[] = [];
+        for (const line of lines) {
+          if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trimStart());
+          }
+        }
+        if (dataLines.length === 0) {
+          continue;
+        }
+        const dataStr = dataLines.join('\n').trim();
+        if (!dataStr) {
+          continue;
+        }
+        if (dataStr === '[DONE]') {
+          callbacks.onDone();
+          return;
+        }
+        try {
+          const data = JSON.parse(dataStr) as { type?: string; content?: string; message?: string };
+          if (data.type === 'delta') {
+            callbacks.onDelta(data.content || '');
+          } else if (data.type === 'thinking') {
+            callbacks.onThinking?.(data.content || '');
+          } else if (data.type === 'error') {
+            callbacks.onError(data.message || '流式响应异常');
             return;
           }
-          try {
-            const data = JSON.parse(dataStr);
-            if (data.type === 'delta') {
-              callbacks.onDelta(data.content);
-            } else if (data.type === 'thinking') {
-              callbacks.onThinking?.(data.content);
-            } else if (data.type === 'error') {
-              callbacks.onError(data.message);
-              return;
-            }
-          } catch (e) {
-            console.error('JSON parse error:', e, dataStr);
-          }
+        } catch (e) {
+          console.error('SSE JSON parse error:', e, dataStr);
         }
       }
     }

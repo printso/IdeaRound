@@ -125,7 +125,15 @@ async def stream_chat_by_llm_config(
             yield f"data: {json.dumps({'type': 'error', 'message': err}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 @router.post("/{config_id}/chat/sync")
 async def sync_chat_by_llm_config(

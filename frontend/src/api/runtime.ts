@@ -25,7 +25,7 @@ export interface RuntimeRoundtableMessage {
   id: string;
   speaker_id: string;
   speaker_name: string;
-  speaker_type: 'user' | 'agent';
+  speaker_type: 'user' | 'agent' | 'host';
   content: string;
   summary?: string;
   summary_metrics?: Record<string, unknown> | null;
@@ -149,6 +149,15 @@ export const startRoundtableRun = (payload: RuntimeRoundtableRunRequest) =>
 export const getRuntimeTask = (taskId: string) =>
   requestJson<RuntimeTaskResponse>(`/runtime/tasks/${encodeURIComponent(taskId)}`);
 
+const SSE_MAX_RETRIES = 3;
+const SSE_BASE_RETRY_DELAY_MS = 1000;
+
+/**
+ * 订阅运行时任务 SSE 流，内置指数退避断线重连。
+ *
+ * 重连策略：网络断开或非终态中断时，最多重试 SSE_MAX_RETRIES 次，
+ * 延迟按 baseDelay * 2^attempt 递增。用户主动 abort 或收到 task.done 不重连。
+ */
 export const streamRuntimeTask = async (
   taskId: string,
   callbacks: {
@@ -158,7 +167,10 @@ export const streamRuntimeTask = async (
   },
   options?: { signal?: AbortSignal },
 ) => {
-  try {
+  let attempt = 0;
+  let taskCompleted = false;
+
+  const connectOnce = async (): Promise<boolean> => {
     const response = await fetch(buildApiUrl(`/runtime/tasks/${encodeURIComponent(taskId)}/stream`), {
       method: 'GET',
       headers: (() => {
@@ -181,42 +193,71 @@ export const streamRuntimeTask = async (
 
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
-    let currentEvent = 'message';
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
+      if (done) break;
+
       buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split('\n\n');
+      const chunks = buffer.split(/\r?\n\r?\n/);
       buffer = chunks.pop() || '';
 
       for (const chunk of chunks) {
-        const lines = chunk.split('\n');
+        const lines = chunk.split(/\r?\n/);
         let dataStr = '';
-        currentEvent = 'message';
+        let currentEvent = 'message';
         for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith('data: ')) {
-            dataStr += line.slice(6);
+          if (line.startsWith('event:')) {
+            currentEvent = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            const dataPart = line.slice(5).trimStart();
+            dataStr = dataStr ? `${dataStr}\n${dataPart}` : dataPart;
           }
         }
-        if (!dataStr) {
-          continue;
-        }
+        dataStr = dataStr.trim();
+        if (!dataStr) continue;
+
         try {
           const data = JSON.parse(dataStr) as { event?: string; task?: RuntimeTaskResponse };
           if (data.task) {
             callbacks.onTask(data.task, data.event || currentEvent);
           }
           if ((data.event || currentEvent) === 'task.done') {
-            callbacks.onDone();
-            return;
+            taskCompleted = true;
+            return true;
           }
-        } catch (error) {
-          console.error('SSE parse error:', error, dataStr);
+        } catch (parseError) {
+          console.error('SSE parse error:', parseError, dataStr);
+        }
+      }
+    }
+    return false;
+  };
+
+  try {
+    while (attempt <= SSE_MAX_RETRIES && !taskCompleted) {
+      try {
+        const finished = await connectOnce();
+        if (finished || taskCompleted) break;
+
+        if (attempt < SSE_MAX_RETRIES) {
+          const delay = SSE_BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          attempt++;
+        } else {
+          break;
+        }
+      } catch (innerError: any) {
+        if (innerError.name === 'AbortError') {
+          callbacks.onDone();
+          return;
+        }
+        if (attempt < SSE_MAX_RETRIES) {
+          const delay = SSE_BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          attempt++;
+        } else {
+          throw innerError;
         }
       }
     }
