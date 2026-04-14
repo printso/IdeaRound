@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Button,
+  Divider,
   Drawer,
   Form,
   Input,
@@ -107,10 +108,22 @@ const ModelManagement: React.FC = () => {
       const payload = {
         ...values,
         temperature: Number(values.temperature ?? 0.7),
+        max_tokens: values.max_tokens ? Number(values.max_tokens) : undefined,
+        top_p: values.top_p != null ? Number(values.top_p) : undefined,
+        context_length: values.context_length ? Number(values.context_length) : undefined,
+        frequency_penalty: values.frequency_penalty != null ? Number(values.frequency_penalty) : undefined,
+        presence_penalty: values.presence_penalty != null ? Number(values.presence_penalty) : undefined,
       };
+      // 清除空值，避免将空字符串传给后端
       if (!payload.api_key || payload.api_key.trim() === '') {
         delete payload.api_key;
       }
+      if (!payload.max_tokens) delete payload.max_tokens;
+      if (!payload.context_length) delete payload.context_length;
+      if (payload.top_p == null) delete payload.top_p;
+      if (payload.frequency_penalty == null) delete payload.frequency_penalty;
+      if (payload.presence_penalty == null) delete payload.presence_penalty;
+      if (!payload.auxiliary_model_id) delete payload.auxiliary_model_id;
       if (editingId) {
         await updateLLMConfig(editingId, payload);
         message.success('模型配置已更新');
@@ -181,6 +194,21 @@ const ModelManagement: React.FC = () => {
       dataIndex: 'api_base',
       key: 'api_base',
       render: (text: string) => text || '-',
+    },
+    {
+      title: '上下文参数',
+      key: 'context_params',
+      render: (_: unknown, record: LLMConfig) => (
+        <Space size={4} wrap>
+          {record.context_length && <Tag color="cyan">ctx {record.context_length.toLocaleString()}</Tag>}
+          {record.max_tokens && <Tag color="purple">out {record.max_tokens.toLocaleString()}</Tag>}
+          {record.top_p != null && <Tag>top_p {record.top_p}</Tag>}
+          {record.frequency_penalty != null && <Tag>freq {record.frequency_penalty}</Tag>}
+          {record.presence_penalty != null && <Tag>pres {record.presence_penalty}</Tag>}
+          {record.auxiliary_model_id != null && <Tag color="cyan">aux #{record.auxiliary_model_id}</Tag>}
+          {!record.context_length && !record.max_tokens && record.top_p == null && record.frequency_penalty == null && record.presence_penalty == null && !record.auxiliary_model_id && <span style={{ color: '#999' }}>默认</span>}
+        </Space>
+      ),
     },
     {
       title: '状态',
@@ -260,6 +288,23 @@ const ModelManagement: React.FC = () => {
           <Form.Item name="temperature" label="默认温度" initialValue={0.7}>
             <InputNumber style={{ width: '100%' }} step={0.1} min={0} max={2} />
           </Form.Item>
+          <Divider orientation="left" style={{ fontSize: 13, margin: '8px 0 16px' }}>上下文参数</Divider>
+          <Form.Item name="context_length" label="上下文长度" tooltip="模型支持的最大上下文 token 数，用于上下文溢出时的截断策略参考">
+            <InputNumber style={{ width: '100%' }} min={1} step={1024} placeholder="例如：128000" />
+          </Form.Item>
+          <Form.Item name="max_tokens" label="最大输出 Tokens" tooltip="单次回复的最大生成 token 数">
+            <InputNumber style={{ width: '100%' }} min={1} step={256} placeholder="例如：4096" />
+          </Form.Item>
+          <Form.Item name="top_p" label="Top P" tooltip="核采样参数，控制多样性。1.0 为不限制">
+            <InputNumber style={{ width: '100%' }} step={0.05} min={0} max={1} placeholder="0 ~ 1" />
+          </Form.Item>
+          <Form.Item name="frequency_penalty" label="频率惩罚" tooltip="已出现 token 的惩罚系数，值越大越避免重复">
+            <InputNumber style={{ width: '100%' }} step={0.1} min={-2} max={2} placeholder="-2 ~ 2" />
+          </Form.Item>
+          <Form.Item name="presence_penalty" label="存在惩罚" tooltip="新 topic 的鼓励系数，值越大越倾向谈论新话题">
+            <InputNumber style={{ width: '100%' }} step={0.1} min={-2} max={2} placeholder="-2 ~ 2" />
+          </Form.Item>
+          <Divider orientation="left" style={{ fontSize: 13, margin: '8px 0 16px' }}>状态</Divider>
           <Form.Item name="is_active" label="是否启用" valuePropName="checked" initialValue={true}>
             <Switch />
           </Form.Item>

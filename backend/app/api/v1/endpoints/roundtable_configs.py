@@ -36,6 +36,20 @@ async def get_prompt_templates(db: AsyncSession = Depends(get_db)):
     configs = result.scalars().all()
     return {config.config_key: config.config_value for config in configs}
 
+
+@router.get("/moderator-summary-mode")
+async def get_moderator_summary_mode(db: AsyncSession = Depends(get_db)):
+    """获取主持人总结模式配置"""
+    result = await db.execute(
+        select(DBRoundtableConfig).where(
+            DBRoundtableConfig.config_key == "moderator_summary_mode",
+            DBRoundtableConfig.is_active.is_(True)
+        )
+    )
+    config = result.scalars().first()
+    mode = config.config_value if config and config.config_value in {"disabled", "manual", "per_round", "auto"} else "auto"
+    return {"mode": mode}
+
 @router.get("/", response_model=List[RoundtableConfig])
 async def read_roundtable_configs(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(DBRoundtableConfig).offset(skip).limit(limit))

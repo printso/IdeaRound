@@ -55,6 +55,11 @@ const RoundtableConfigManagement: React.FC = () => {
   const [schedulingMode, setSchedulingMode] = useState<string>('single_round_robin');
   const [savingMode, setSavingMode] = useState(false);
 
+  // 主持人总结模式相关状态
+  const [summaryModeId, setSummaryModeId] = useState<number | null>(null);
+  const [summaryMode, setSummaryMode] = useState<string>('auto');
+  const [savingSummaryMode, setSavingSummaryMode] = useState(false);
+
   const fetchConfigs = async () => {
     setLoading(true);
     try {
@@ -67,6 +72,12 @@ const RoundtableConfigManagement: React.FC = () => {
       if (modeConfig) {
         setSchedulingModeId(modeConfig.id);
         setSchedulingMode(modeConfig.config_value || 'single_round_robin');
+      }
+
+      const summaryConfig = data.find(c => c.config_key === 'moderator_summary_mode');
+      if (summaryConfig) {
+        setSummaryModeId(summaryConfig.id);
+        setSummaryMode(summaryConfig.config_value || 'auto');
       }
     } catch {
       message.error('加载圆桌配置失败');
@@ -101,6 +112,35 @@ const RoundtableConfigManagement: React.FC = () => {
       message.error('保存调度模式失败');
     } finally {
       setSavingMode(false);
+    }
+  };
+
+  const handleSaveSummaryMode = async () => {
+    setSavingSummaryMode(true);
+    try {
+      const payload = {
+        config_key: 'moderator_summary_mode',
+        config_value: summaryMode,
+        description: '主持人总结模式：disabled=禁用主持人总结；manual=仅手动点击总结按钮时触发；per_round=每轮对话后自动启用总结；auto=裁判判定收敛或达到最大轮数时自动总结',
+        is_active: true,
+      };
+
+      const url = summaryModeId ? `/api/v1/roundtable-configs/${summaryModeId}` : '/api/v1/roundtable-configs/';
+      const method = summaryModeId ? 'PUT' : 'POST';
+
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) throw new Error('Failed to save summary mode');
+      message.success('主持人总结规则已更新，圆桌空间将实时生效');
+      fetchConfigs();
+    } catch {
+      message.error('保存主持人总结规则失败');
+    } finally {
+      setSavingSummaryMode(false);
     }
   };
 
@@ -298,6 +338,59 @@ const RoundtableConfigManagement: React.FC = () => {
                     loading={savingMode}
                   >
                     保存调度模式
+                  </Button>
+                </div>
+              </Card>
+            ),
+          },
+          {
+            key: 'summary',
+            label: '主持人总结规则',
+            children: (
+              <Card title="主持人总结规则" style={{ maxWidth: 800 }}>
+                <div style={{ marginBottom: 24 }}>
+                  <Text type="secondary">
+                    配置圆桌空间中主持人总结的触发方式。修改后对所有正在运行和新建的圆桌空间实时生效。
+                  </Text>
+                </div>
+                <Radio.Group
+                  value={summaryMode}
+                  onChange={(e) => setSummaryMode(e.target.value)}
+                  style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}
+                >
+                  <Radio value="disabled">
+                    <Space direction="vertical" size={2}>
+                      <Text strong>禁用主持人总结</Text>
+                      <Text type="secondary">主持人不会触发总结，圆桌讨论将一直在脑暴阶段进行，直到用户手动干预或达到最大轮数后结束。</Text>
+                    </Space>
+                  </Radio>
+                  <Radio value="manual">
+                    <Space direction="vertical" size={2}>
+                      <Text strong>仅手动总结</Text>
+                      <Text type="secondary">不会自动进入收敛阶段，只有用户点击「总结」按钮时才会触发主持人总结。适合需要完全掌控讨论节奏的场景。</Text>
+                    </Space>
+                  </Radio>
+                  <Radio value="per_round">
+                    <Space direction="vertical" size={2}>
+                      <Text strong>每轮对话后启用总结</Text>
+                      <Text type="secondary">每圈（所有角色都发言一次）评估后，自动进入收敛阶段进行总结。适合需要频繁收敛、快速出结论的场景。</Text>
+                    </Space>
+                  </Radio>
+                  <Radio value="auto">
+                    <Space direction="vertical" size={2}>
+                      <Text strong>智能自动总结（默认）</Text>
+                      <Text type="secondary">由裁判评估讨论收敛度，当目标达成或达到最大轮数时自动进入收敛阶段。兼顾讨论深度和效率。</Text>
+                    </Space>
+                  </Radio>
+                </Radio.Group>
+
+                <div style={{ marginTop: 32 }}>
+                  <Button
+                    type="primary"
+                    onClick={handleSaveSummaryMode}
+                    loading={savingSummaryMode}
+                  >
+                    保存总结规则
                   </Button>
                 </div>
               </Card>

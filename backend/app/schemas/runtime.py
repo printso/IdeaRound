@@ -52,6 +52,9 @@ class RuntimeRoundtableRunRequest(BaseModel):
     roles: List[RuntimeRoleRequest] = Field(..., max_length=20)
     prior_messages: List[RuntimeRoundtableMessageRequest] = Field(default=[], max_length=200)
     trigger: Optional[str] = Field(default=None, max_length=50)
+    moderator_summary_mode: Optional[str] = Field(default=None, pattern=r"^(disabled|manual|per_round|auto)$")
+    auxiliary_model_id: Optional[int] = Field(default=None, description="辅助模型ID，用于裁判/书记员/摘要等非创意任务")
+    structured_memory: Optional[Dict[str, Any]] = Field(default=None, description="结构化记忆数据（共识/分歧/行动项等）")
 
 
 class RuntimeTaskResponse(BaseModel):

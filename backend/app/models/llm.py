@@ -18,6 +18,12 @@ class LLMConfig(Base):
     is_active = Column(Boolean, default=True)
     enable_thinking = Column(Boolean, default=False)
     temperature = Column(Float, default=0.7)
+    max_tokens = Column(Integer, nullable=True)
+    top_p = Column(Float, nullable=True)
+    context_length = Column(Integer, nullable=True)
+    frequency_penalty = Column(Float, nullable=True)
+    presence_penalty = Column(Float, nullable=True)
+    auxiliary_model_id = Column(Integer, nullable=True, comment="辅助模型ID，用于裁判/书记员/摘要等非创意任务的路由")
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

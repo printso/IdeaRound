@@ -3,7 +3,7 @@ import { Button, Dropdown, Col, Form, Grid, Input, Layout, List, Modal, Row, Spa
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getLLMConfigs, streamChatByLLMConfig } from '../api/llm';
+import { getLLMConfigs, streamChatByLLMConfig, syncChatByLLMConfig } from '../api/llm';
 import type { LLMConfig } from '../api/llm';
 import AppHeader from '../components/AppHeader';
 import RoundtableCanvas from '../components/RoundtableCanvas';
@@ -99,13 +99,14 @@ function Home() {
   const [roleTemplates, setRoleTemplates] = useState<{id: number; name: string; stance: string; description?: string; soul_config?: string; is_active?: boolean; is_default?: boolean; skill_tags?: string[]; category?: string}[]>([]);
   const [scenarioTemplates, setScenarioTemplates] = useState<{id: number; name: string; description?: string; preset_roles: number[]; system_prompt_override?: string; is_active: boolean}[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<Record<string, string>>({});
+  const [moderatorSummaryMode, setModeratorSummaryMode] = useState<'disabled' | 'manual' | 'per_round' | 'auto'>('auto');
   
   const [autoBrainstorm, setAutoBrainstorm] = useState(true);
   const [userPrompt, setUserPrompt] = useState('');
   const [sending, setSending] = useState(false);
   const [replyViewMode, setReplyViewMode] = useState<ReplyViewMode>(() => {
     try {
-      const cachedMode = localStorage.getItem(getReplyViewModeStorageKey());
+      const cachedMode = localStorage.getItem(getReplyViewModeStorageKey(user?.id));
       return cachedMode === 'detailed' ? 'detailed' : 'compact';
     } catch {
       return 'compact';
@@ -253,44 +254,104 @@ function Home() {
     }
   };
 
-  const collectModelText = useCallback((prompt: string, systemPromptText: string): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      if (!selectedModelId) {
-        resolve('');
-        return;
-      }
-      let output = '';
-      streamChatByLLMConfig(
-        selectedModelId,
-        {
-          message: prompt,
-          system_prompt: systemPromptText,
-        },
-        {
-          onDelta: (delta) => {
-            output += delta;
-          },
-          onDone: () => {
-            resolve(output.trim());
-          },
-          onError: (error) => {
-            reject(error);
-          },
-        },
-      ).catch(reject);
-    });
-  }, [selectedModelId]);
-
   const parseJsonObject = (text: string) => {
-    const candidate = text.match(/\{[\s\S]*\}/)?.[0];
-    if (!candidate) {
-      return null;
+    const normalizedText = text.trim();
+    const tryParseCandidate = (candidateText: string, depth = 0): any => {
+      if (!candidateText || depth > 2) {
+        return null;
+      }
+
+      try {
+        const parsed = JSON.parse(candidateText);
+        if (typeof parsed === 'string') {
+          const nestedText = parsed.trim();
+          if ((nestedText.startsWith('{') && nestedText.endsWith('}'))
+            || (nestedText.startsWith('[') && nestedText.endsWith(']'))) {
+            return tryParseCandidate(nestedText, depth + 1);
+          }
+        }
+        return parsed;
+      } catch {
+        return null;
+      }
+    };
+
+    const candidates: string[] = [];
+    const fencedMatch = normalizedText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fencedMatch?.[1]) {
+      candidates.push(fencedMatch[1].trim());
     }
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      return null;
+    candidates.push(normalizedText);
+
+    const extractedCandidates: string[] = [];
+    let startIndex = -1;
+    const stack: string[] = [];
+    let inString = false;
+    let isEscaped = false;
+
+    for (let index = 0; index < normalizedText.length; index += 1) {
+      const char = normalizedText[index];
+
+      if (inString) {
+        if (isEscaped) {
+          isEscaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          isEscaped = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (char === '{' || char === '[') {
+        if (stack.length === 0) {
+          startIndex = index;
+        }
+        stack.push(char);
+        continue;
+      }
+
+      if (char !== '}' && char !== ']') {
+        continue;
+      }
+
+      if (stack.length === 0) {
+        continue;
+      }
+
+      const expectedOpening = char === '}' ? '{' : '[';
+      if (stack[stack.length - 1] !== expectedOpening) {
+        stack.length = 0;
+        startIndex = -1;
+        continue;
+      }
+
+      stack.pop();
+      if (stack.length === 0 && startIndex >= 0) {
+        extractedCandidates.push(normalizedText.slice(startIndex, index + 1));
+        startIndex = -1;
+      }
     }
+
+    candidates.push(...extractedCandidates);
+
+    for (const candidate of candidates) {
+      const parsed = tryParseCandidate(candidate);
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+
+    return null;
   };
 
   const generateExpectedResultByIntent = async (intentData: IntentCardState) => {
@@ -298,20 +359,18 @@ function Home() {
     if (!selectedModelId) {
       return fallback;
     }
-    const prompt = `你需要基于意图洞察生成“期望结果”。
-请只输出一段中文，不超过120字，不要使用标题，不要使用列表。
-
-原始需求：${initialDemand || '无'}
-核心目标：${intentData.coreGoal || '无'}
-限制条件：${intentData.constraints || '无'}
-待解决痛点：${intentData.painPoints || '无'}
-澄清交互：${probeTurns.map((turn) => `${turn.role}:${turn.content}`).join(' | ') || '无'}
-`;
-    const text = await collectModelText(
-      prompt,
-      '你是产品目标设定专家，擅长把需求转化为可检验的期望结果描述。',
-    );
-    return text || fallback;
+    const prompt = `基于意图洞察生成"期望结果"，不超过80字，不用标题和列表。
+目标:${intentData.coreGoal || '无'} 限制:${intentData.constraints || '无'} 痛点:${intentData.painPoints || '无'}`;
+    try {
+      const text = await syncChatByLLMConfig(selectedModelId, {
+        message: prompt,
+        system_prompt: '你是产品目标设定专家，把需求转化为可检验的期望结果描述。直接输出结果文本。',
+        max_tokens: 256,
+      });
+      return text || fallback;
+    } catch {
+      return fallback;
+    }
   };
 
   const applyJudgeResult = useCallback((payload?: Record<string, unknown> | null) => {
@@ -865,6 +924,20 @@ function Home() {
     }
   };
 
+  const loadModeratorSummaryMode = async () => {
+    try {
+      const response = await fetch('/api/v1/roundtable-configs/moderator-summary-mode');
+      if (response.ok) {
+        const data = await response.json();
+        if (data.mode && ['disabled', 'manual', 'per_round', 'auto'].includes(data.mode)) {
+          setModeratorSummaryMode(data.mode as 'disabled' | 'manual' | 'per_round' | 'auto');
+        }
+      }
+    } catch (e) {
+      console.error('加载主持人总结模式失败:', e);
+    }
+  };
+
   useEffect(() => {
     // 防止在 React StrictMode 下重复加载
     if (hasLoadedInitialDataRef.current) {
@@ -876,6 +949,7 @@ function Home() {
     loadRoleTemplates();
     loadScenarioTemplates();
     loadPromptTemplates();
+    loadModeratorSummaryMode();
     loadWorkspaces(); // 加载工作台列表
   }, []);
 
@@ -1080,13 +1154,12 @@ function Home() {
     ];
   };
 
-  // 基于意图和大模型智能选择角色
+  // 基于意图和大模型智能选择角色（优化版：使用同步调用+紧凑prompt+max_tokens限制）
   const generateRolesByIntentWithAI = async (
     intentData: IntentCardState,
     availableTemplates: typeof roleTemplates
   ): Promise<RoleMember[]> => {
     if (!selectedModelId || availableTemplates.length === 0) {
-      // Fallback: 返回默认角色组合
       return availableTemplates
         .filter((tpl) => tpl.is_default || ['建设', '对抗', '评审'].includes(tpl.stance))
         .slice(0, 5)
@@ -1100,44 +1173,25 @@ function Home() {
         }));
     }
 
-    // 构建角色候选列表
+    // 构建紧凑角色候选列表（去掉长文本字段）
     const roleCandidates = availableTemplates
       .filter((tpl) => tpl.is_active !== false)
-      .map((tpl) => ({
-        id: tpl.id,
-        name: tpl.name,
-        stance: tpl.stance,
-        description: tpl.description || '',
-        skill_tags: tpl.skill_tags || [],
-        category: tpl.category || '',
-      }));
+      .map((tpl) => ({ id: tpl.id, name: tpl.name, stance: tpl.stance, cat: tpl.category || '' }));
 
-    const prompt = `你是一位专业的"圆桌讨论角色配置专家"。请根据以下需求意图，从候选角色列表中选择最适合参与讨论的角色。
-
-【需求意图】
-核心目标：${intentData.coreGoal || '无'}
-限制条件：${intentData.constraints || '无'}
-核心痛点：${intentData.painPoints || '无'}
-
-【候选角色列表】
-${JSON.stringify(roleCandidates, null, 2)}
-
-【选择要求】
-1. 选择 3-6 个角色，确保覆盖不同立场（建设、对抗、中立、评审）
-2. 优先选择与需求领域相关的专业角色
-3. 确保有至少一个建设型角色和一个对抗/评审型角色形成思维碰撞
-4. 返回严格的 JSON 数组格式，只包含选中的角色 ID：
-[1, 5, 8]  // 示例：只返回 ID 数组`;
+    const prompt = `从候选角色中选3-6个参与讨论，确保覆盖建设+对抗/评审立场。
+目标:${intentData.coreGoal || '无'} 限制:${intentData.constraints || '无'} 痛点:${intentData.painPoints || '无'}
+候选:${JSON.stringify(roleCandidates)}
+只输出ID数组如[1,5,8]`;
 
     try {
-      const rawJson = await collectModelText(
-        prompt,
-        '你是一个专业的角色配置助手，只输出 JSON 格式的角色 ID 数组，不要有任何其他解释文字。'
-      );
+      const rawJson = await syncChatByLLMConfig(selectedModelId, {
+        message: prompt,
+        system_prompt: '只输出JSON格式的角色ID数组，不要有任何解释文字。',
+        max_tokens: 128,
+      });
       const selectedIds = parseJsonObject(rawJson);
 
       if (Array.isArray(selectedIds) && selectedIds.length > 0) {
-        // 根据大模型选择的 ID 生成角色列表
         const selectedRoles = availableTemplates
           .filter((tpl) => selectedIds.includes(tpl.id))
           .map((tpl) => ({
@@ -1193,95 +1247,106 @@ ${JSON.stringify(roleCandidates, null, 2)}
     setAutoRoundCount(0);
     setAutoConversationEnabled(true);
     
-    // 如果没有开启高级模式，则通过 AI 主持人一次性静默抽取意图、期望结果和角色阵型
+    // 如果没有开启高级模式，则并行执行意图分析+角色选择，加速至5秒内
     if (!isExpertMode) {
       const loadingMsg = message.loading('AI主持人正在分析需求并组建圆桌...', 0);
       try {
         const materialContent = uploadedMaterials.length > 0 
           ? `附件材料摘要：${uploadedMaterials.map(m => m.summary || m.filename).join(';')}` 
           : '';
-        const fullDemand = `${initialDemand}
-${materialContent}`;
+        const fullDemand = `${initialDemand}\n${materialContent}`;
 
+        // 构建紧凑的角色候选列表（去除长文本减少token消耗）
         const roleCandidates = roleTemplates
           .filter((tpl) => tpl.is_active !== false)
-          .map((tpl) => ({
-            id: tpl.id,
-            name: tpl.name,
-            stance: tpl.stance,
-            description: tpl.description || '',
-          }));
+          .map((tpl) => ({ id: tpl.id, name: tpl.name, stance: tpl.stance, cat: tpl.category || '' }));
 
-        const prompt = `你是一位"需求分析师"与"圆桌讨论角色配置专家"。
-请根据用户的初始输入，提炼出圆桌讨论所需的结构化意图卡片、期望结果，并从候选角色列表中选择最适合参与讨论的 3-6 个角色。
+        // 紧凑 prompt：意图分析（单次调用提取意图卡片+期望结果）
+        const intentPrompt = `根据用户输入提炼意图卡片和期望结果。
+用户输入：${fullDemand}
+严格输出JSON：{"coreGoal":"核心目标(≤30字)","constraints":"限制条件(简明;无则填无)","painPoints":"核心痛点(简明;无则填无)","expectedResult":"期望结果(≤80字)"}`;
 
-【用户输入】
-${fullDemand}
+        // 紧凑 prompt：角色选择（独立调用，与意图分析并行）
+        const rolePrompt = `从候选角色中选3-6个参与讨论，确保覆盖建设+对抗/评审立场。
+需求：${fullDemand}
+候选：${JSON.stringify(roleCandidates)}
+只输出ID数组如[1,5,8]`;
 
-【候选角色列表】
-${JSON.stringify(roleCandidates, null, 2)}
+        // 并行发起两次 LLM 调用
+        const [intentResult, roleResult] = await Promise.all([
+          syncChatByLLMConfig(selectedModelId, {
+            message: intentPrompt,
+            system_prompt: '只输出合法JSON，不要包含任何其他文字。',
+            max_tokens: 512,
+          }).then(raw => ({ raw, parsed: parseJsonObject(raw) })),
+          syncChatByLLMConfig(selectedModelId, {
+            message: rolePrompt,
+            system_prompt: '只输出JSON格式的角色ID数组，不要有任何解释文字。',
+            max_tokens: 128,
+          }).then(raw => parseJsonObject(raw)),
+        ]);
 
-【要求】
-1. 意图需简明扼要；期望结果不超过120字。
-2. 选择的角色必须覆盖不同立场（建设、对抗/评审）。
-3. 严格输出 JSON 格式，不要包含任何其他文字：
-{
-  "coreGoal": "核心目标（不超过30个字）",
-  "constraints": "限制条件（简明扼要；无则填无）",
-  "painPoints": "核心痛点（简明扼要；无则填无）",
-  "expectedResult": "期望结果",
-  "roleIds": [1, 5, 8]
-}`;
-
-        const rawJson = await collectModelText(prompt, '你是一个专业的 JSON 提取机器人，只输出合法的 JSON');
-        const parsedData = parseJsonObject(rawJson);
-        
-        if (parsedData) {
-          const newIntent = {
-            coreGoal: parsedData.coreGoal || initialDemand.slice(0, 20),
-            constraints: parsedData.constraints || '无',
-            painPoints: parsedData.painPoints || '无'
-          };
-          setIntentCard(newIntent);
-          
-          let selectedRoles: RoleMember[] = [];
-          if (Array.isArray(parsedData.roleIds) && parsedData.roleIds.length > 0) {
-            selectedRoles = roleTemplates
-              .filter((tpl) => parsedData.roleIds.includes(tpl.id))
-              .map((tpl) => ({
-                id: `role_${tpl.id}`,
-                name: tpl.name,
-                stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
-                desc: tpl.description || '',
-                selected: true,
-                soulConfig: tpl.soul_config,
-              }));
-          }
-          
-          if (selectedRoles.length === 0) {
-            selectedRoles = roleTemplates
-              .filter((tpl) => tpl.is_default)
-              .slice(0, 5)
-              .map((tpl) => ({
-                id: `role_${tpl.id}`,
-                name: tpl.name,
-                stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
-                desc: tpl.description || '',
-                selected: true,
-                soulConfig: tpl.soul_config,
-              }));
-          }
-
-          setRoles(selectedRoles);
-          setExpectedResult(parsedData.expectedResult || `围绕「${newIntent.coreGoal}」形成可执行方案`);
-          setIntentReady(true);
-          setStep('roles');
-
-          loadingMsg();
-          message.success('需求分析完毕，AI 已为您智能匹配专业角色阵型');
-        } else {
-          throw new Error('JSON 解析失败');
+        const parsedData = intentResult.parsed;
+        if (!parsedData) {
+          console.warn('意图JSON解析失败，模型原始响应:', intentResult.raw, '— 将使用默认意图卡片降级处理');
         }
+
+        const fallbackGoal = initialDemand.trim().slice(0, 30) || '用户需求';
+        const newIntent = {
+          coreGoal: parsedData?.coreGoal || fallbackGoal,
+          constraints: parsedData?.constraints || '无',
+          painPoints: parsedData?.painPoints || '无'
+        };
+        setIntentCard(newIntent);
+        setExpectedResult(parsedData?.expectedResult || `围绕「${newIntent.coreGoal}」形成可执行方案`);
+
+        // 处理角色选择结果
+        let selectedRoles: RoleMember[] = [];
+        if (Array.isArray(roleResult) && roleResult.length > 0) {
+          selectedRoles = roleTemplates
+            .filter((tpl) => roleResult.includes(tpl.id))
+            .map((tpl) => ({
+              id: `role_${tpl.id}`,
+              name: tpl.name,
+              stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+              desc: tpl.description || '',
+              selected: true,
+              soulConfig: tpl.soul_config,
+            }));
+        }
+        // 也兼容旧格式：意图结果中包含 roleIds
+        if (selectedRoles.length === 0 && Array.isArray(parsedData?.roleIds) && parsedData.roleIds.length > 0) {
+          selectedRoles = roleTemplates
+            .filter((tpl) => parsedData.roleIds.includes(tpl.id))
+            .map((tpl) => ({
+              id: `role_${tpl.id}`,
+              name: tpl.name,
+              stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+              desc: tpl.description || '',
+              selected: true,
+              soulConfig: tpl.soul_config,
+            }));
+        }
+        if (selectedRoles.length === 0) {
+          selectedRoles = roleTemplates
+            .filter((tpl) => tpl.is_default)
+            .slice(0, 5)
+            .map((tpl) => ({
+              id: `role_${tpl.id}`,
+              name: tpl.name,
+              stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+              desc: tpl.description || '',
+              selected: true,
+              soulConfig: tpl.soul_config,
+            }));
+        }
+
+        setRoles(selectedRoles);
+        setIntentReady(true);
+        setStep('roles');
+
+        loadingMsg();
+        message.success('需求分析完毕，AI 已为您智能匹配专业角色阵型');
       } catch (err) {
         loadingMsg();
         console.error(err);
@@ -1323,36 +1388,31 @@ ${JSON.stringify(roleCandidates, null, 2)}
       message.warning('请先完善核心目标');
       return;
     }
-    let nextExpectedResult = expectedResult.trim();
-    if (!nextExpectedResult) {
-      setGeneratingExpectedResult(true);
-      try {
-        nextExpectedResult = await generateExpectedResultByIntent(values as IntentCardState);
-        setExpectedResult(nextExpectedResult);
-      } finally {
-        setGeneratingExpectedResult(false);
-      }
-    }
-    if (!nextExpectedResult.trim()) {
-      message.warning('请先生成或填写期望结果');
-      return;
-    }
-    setIntentReady(true);
-    setStep('roles');
-
-    // 使用大模型智能选择角色
-    const loadingMsg = message.loading('正在根据意图智能匹配最佳角色组合...', 0);
+    // 并行执行：生成期望结果 + 智能选择角色（两者无依赖关系）
+    const loadingMsg = message.loading('正在分析意图并匹配角色...', 0);
+    setGeneratingExpectedResult(true);
     try {
-      const generatedRoles = await generateRolesByIntentWithAI(
-        values as IntentCardState,
-        roleTemplates
-      );
+      const needExpectedResult = !expectedResult.trim();
+      const [expectedResultText, generatedRoles] = await Promise.all([
+        needExpectedResult
+          ? generateExpectedResultByIntent(values as IntentCardState)
+          : Promise.resolve(expectedResult.trim()),
+        generateRolesByIntentWithAI(values as IntentCardState, roleTemplates),
+      ]);
+      if (needExpectedResult && expectedResultText) {
+        setExpectedResult(expectedResultText);
+      }
+      if (!expectedResultText && !expectedResult.trim()) {
+        message.warning('请先生成或填写期望结果');
+        return;
+      }
       setRoles(generatedRoles);
+      setIntentReady(true);
+      setStep('roles');
       message.success('意图洞察完成，AI 已为您智能匹配最佳角色矩阵');
     } catch (error) {
-      console.error('角色生成失败:', error);
-      message.error('角色匹配失败，已使用默认角色组合');
-      // Fallback 到默认角色
+      console.error('意图确认失败:', error);
+      message.error('分析失败，已使用默认角色组合');
       const fallbackRoles = roleTemplates
         .filter((tpl) => tpl.is_default)
         .slice(0, 5)
@@ -1365,8 +1425,11 @@ ${JSON.stringify(roleCandidates, null, 2)}
           soulConfig: tpl.soul_config,
         }));
       setRoles(fallbackRoles);
+      setIntentReady(true);
+      setStep('roles');
     } finally {
       loadingMsg();
+      setGeneratingExpectedResult(false);
     }
   };
 
@@ -1890,6 +1953,7 @@ ${JSON.stringify(roleCandidates, null, 2)}
         max_dialogue_rounds: maxDialogueRounds,
         auto_round_count: autoRoundCount,
         intent_card: intentCard,
+        moderator_summary_mode: moderatorSummaryMode,
         expected_result: expectedResult,
         system_prompt: overrideSystemPrompt ?? systemPrompt,
         prompt_templates: promptTemplates,
@@ -2489,10 +2553,15 @@ ${JSON.stringify(roleCandidates, null, 2)}
               <div>
                 <Space wrap size={4} style={{ marginBottom: 8 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>🎤 主持人干预：</Text>
+                  <Tag color={moderatorSummaryMode === 'disabled' ? 'red' : moderatorSummaryMode === 'manual' ? 'orange' : moderatorSummaryMode === 'per_round' ? 'blue' : 'green'} style={{ fontSize: 11 }}>
+                    {moderatorSummaryMode === 'disabled' ? '总结已禁用' : moderatorSummaryMode === 'manual' ? '手动总结' : moderatorSummaryMode === 'per_round' ? '每轮总结' : '智能总结'}
+                  </Tag>
                   <Button size="small" onClick={() => applyHostAction('focus')}>🎯 拉回</Button>
                   <Button size="small" onClick={() => applyHostAction('conflict')}>⚔️ 对抗</Button>
                   <Button size="small" onClick={() => setNewIdeaModalOpen(true)}>💡 新点子</Button>
-                  <Button size="small" onClick={() => applyHostAction('summarize')} danger>🛑 总结</Button>
+                  {moderatorSummaryMode !== 'disabled' && (
+                    <Button size="small" onClick={() => applyHostAction('summarize')} danger>🛑 总结</Button>
+                  )}
                 </Space>
                 <Row gutter={8} align="bottom">
                   <Col flex="auto">

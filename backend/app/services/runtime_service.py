@@ -16,6 +16,46 @@ from openai import AsyncOpenAI
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# ── 模块化组件导入 ──────────────────────────────────────────────────
+try:
+    from backend.app.services.runtime import (
+        ContextCompressor,
+        MemoryManager,
+        ModelRouter,
+        PromptRegistry,
+        SafetyGuard,
+        StrategyRegistry,
+        SummaryService,
+        TaskType,
+        build_compressor_llm_caller,
+        estimate_messages_tokens,
+        get_model_router,
+        get_prompt_registry,
+        get_safety_guard,
+        get_strategy_registry,
+        get_summary_service,
+        merge_memory_summary_v2,
+    )
+except ImportError:
+    from app.services.runtime import (
+        ContextCompressor,
+        MemoryManager,
+        ModelRouter,
+        PromptRegistry,
+        SafetyGuard,
+        StrategyRegistry,
+        SummaryService,
+        TaskType,
+        build_compressor_llm_caller,
+        estimate_messages_tokens,
+        get_model_router,
+        get_prompt_registry,
+        get_safety_guard,
+        get_strategy_registry,
+        get_summary_service,
+        merge_memory_summary_v2,
+    )
+
 try:
     from backend.app.core.database import AsyncSessionLocal, get_db
     from backend.app.core.redis_client import (
@@ -314,15 +354,38 @@ def _build_recent_transcript(
     return transcript[-max_chars:] if len(transcript) > max_chars else transcript
 
 
+def _rebuild_memory_summary_from_messages(messages: List[Dict[str, Any]], *, max_chars: int = 1200) -> str:
+    """从消息列表重新构建 memory_summary，优先使用 LLM 生成的精炼摘要。"""
+    snippets: List[str] = []
+    for item in messages:
+        if item.get("speaker_type") == "host":
+            continue  # 跳过主持人调度消息
+        speaker = item.get("speaker_name") or item.get("speakerName") or "未知角色"
+        summary_text = (item.get("summary") or "").strip()
+        if summary_text:
+            snippets.append(f"{speaker}：{summary_text}")
+        else:
+            points = _extract_summary_points(item.get("content") or "", max_items=2)
+            if points:
+                snippets.append(f"{speaker}：" + "；".join(points))
+    merged = " | ".join(snippets)
+    return merged[-max_chars:] if len(merged) > max_chars else merged
+
+
 def _merge_memory_summary(memory_summary: str, messages: List[Dict[str, Any]], *, max_chars: int = 1200) -> str:
     snippets: List[str] = []
     if memory_summary:
         snippets.append(memory_summary)
     for item in messages[-6:]:
         speaker = item.get("speaker_name") or item.get("speakerName") or "未知角色"
-        points = _extract_summary_points(item.get("content") or "", max_items=2)
-        if points:
-            snippets.append(f"{speaker}：" + "；".join(points))
+        # 优先使用 LLM 生成的精炼摘要，否则提取原始要点
+        summary_text = item.get("summary") or ""
+        if summary_text and summary_text.strip():
+            snippets.append(f"{speaker}：{summary_text.strip()}")
+        else:
+            points = _extract_summary_points(item.get("content") or "", max_items=2)
+            if points:
+                snippets.append(f"{speaker}：" + "；".join(points))
     merged = " | ".join(snippets)
     return merged[-max_chars:] if len(merged) > max_chars else merged
 
@@ -410,6 +473,11 @@ async def _load_llm_settings(model_id: int) -> Dict[str, Any]:
             "api_base": llm_config.api_base,
             "model_name": llm_config.model_name,
             "temperature": llm_config.temperature,
+            "max_tokens": llm_config.max_tokens,
+            "top_p": llm_config.top_p,
+            "context_length": llm_config.context_length,
+            "frequency_penalty": llm_config.frequency_penalty,
+            "presence_penalty": llm_config.presence_penalty,
         }
 
 
@@ -420,6 +488,176 @@ CONTEXT_EXCEEDED_KEYWORDS = (
     "context_length_exceeded",
     "context overflow",
 )
+
+# ---- 任务取消事件注册表：让流式生成循环能及时响应取消请求 ----
+_task_cancel_events: Dict[str, asyncio.Event] = {}
+
+
+def _register_task_cancel_event(task_id: str) -> asyncio.Event:
+    """注册一个可等待的取消事件，供流式生成循环检查。"""
+    event = asyncio.Event()
+    _task_cancel_events[task_id] = event
+    return event
+
+
+def _signal_task_cancel(task_id: str) -> None:
+    """发出取消信号，让正在进行的 LLM 调用尽快退出。"""
+    event = _task_cancel_events.get(task_id)
+    if event:
+        event.set()
+
+
+def _unregister_task_cancel_event(task_id: str) -> None:
+    """任务结束时清理取消事件。"""
+    _task_cancel_events.pop(task_id, None)
+
+
+# ---- 智能上下文截断：按语义优先级截断，替代粗暴按字符对半切 ----
+
+def _estimate_token_count(text: str) -> int:
+    """粗估 token 数：中文约 1 字符 ≈ 1.5 token，英文约 4 字符 ≈ 1 token"""
+    if not text:
+        return 0
+    chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    other_chars = len(text) - chinese_chars
+    return int(chinese_chars * 1.5 + other_chars / 4)
+
+
+def _truncate_prompt_by_priority(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int = 6000,
+) -> tuple:
+    """
+    按优先级截断 prompt，而非粗暴按字符对半切。
+    优先级：system_prompt 基础层 > user_prompt 最新内容 > user_prompt 历史 > system_prompt 补充层
+
+    策略：
+    1. 如果总估算 token 未超限，不截断
+    2. 先精简 user_prompt 中的讨论摘要段（限制到 600 字）
+    3. 再精简 system_prompt：移除补充系统提示词部分
+    4. 最后截断 system_prompt 中的灵魂配置长段落
+    """
+    total_est = _estimate_token_count(system_prompt) + _estimate_token_count(user_prompt)
+    if total_est <= max_tokens:
+        return system_prompt, user_prompt
+
+    # 策略 1：精简 user_prompt 中的讨论摘要段
+    summary_marker = "【讨论摘要】"
+    if summary_marker in user_prompt:
+        parts = user_prompt.split(summary_marker, 1)
+        summary_and_rest = parts[1]
+        # 找下一个段落标记
+        next_marker_idx = len(summary_and_rest)
+        for marker in ["【本轮输入】", "【讨论阶段】", "【核心目标】", "【用户意图】"]:
+            idx = summary_and_rest.find(marker)
+            if idx > 0:
+                next_marker_idx = min(next_marker_idx, idx)
+        if next_marker_idx < len(summary_and_rest):
+            # 保留后续段落，截断摘要段
+            summary_content = summary_and_rest[:next_marker_idx]
+            rest_content = summary_and_rest[next_marker_idx:]
+            truncated_summary = summary_content[:600] + "…\n"
+            user_prompt = parts[0] + summary_marker + truncated_summary + rest_content
+        else:
+            truncated_summary = summary_and_rest[:600] + "…"
+            user_prompt = parts[0] + summary_marker + truncated_summary
+
+    total_est = _estimate_token_count(system_prompt) + _estimate_token_count(user_prompt)
+    if total_est <= max_tokens:
+        return system_prompt, user_prompt
+
+    # 策略 2：移除 system_prompt 中的补充系统提示词段
+    supplement_marker = "补充系统提示词："
+    if supplement_marker in system_prompt:
+        idx = system_prompt.rfind(supplement_marker)
+        system_prompt = system_prompt[:idx].rstrip()
+
+    total_est = _estimate_token_count(system_prompt) + _estimate_token_count(user_prompt)
+    if total_est <= max_tokens:
+        return system_prompt, user_prompt
+
+    # 策略 3：截断 system_prompt 中的长段落（可能是灵魂配置）
+    lines = system_prompt.split("\n")
+    filtered_lines = []
+    skip_next = False
+    for line in lines:
+        if len(line) > 200 and not skip_next:
+            filtered_lines.append(line[:100] + "…")
+            skip_next = True
+        else:
+            skip_next = False
+            filtered_lines.append(line)
+    system_prompt = "\n".join(filtered_lines)
+
+    return system_prompt, user_prompt
+
+
+# ---- 角色调度模式进程内缓存 ----
+_scheduling_mode_cache: Dict[str, str] = {}
+_SCHEDULING_MODE_CACHE_TTL = 300  # 5 分钟
+_scheduling_mode_cache_time: float = 0
+
+
+async def _get_scheduling_mode() -> str:
+    """获取角色调度模式，带进程内缓存（5 分钟 TTL）。"""
+    global _scheduling_mode_cache_time
+
+    now = time.time()
+    if now - _scheduling_mode_cache_time < _SCHEDULING_MODE_CACHE_TTL and _scheduling_mode_cache:
+        return _scheduling_mode_cache.get("mode", "single_round_robin")
+
+    try:
+        from app.models.roundtable_config import RoundtableConfig as DBRoundtableConfig
+        async with AsyncSessionLocal() as db_session:
+            result = await db_session.execute(
+                select(DBRoundtableConfig).where(DBRoundtableConfig.config_key == "role_scheduling_mode")
+            )
+            mode_config = result.scalars().first()
+            mode = mode_config.config_value if mode_config and mode_config.config_value else "single_round_robin"
+            _scheduling_mode_cache["mode"] = mode
+            _scheduling_mode_cache_time = now
+            return mode
+    except Exception:
+        return _scheduling_mode_cache.get("mode", "single_round_robin")
+
+
+# ---- 主持人总结模式进程内缓存 ----
+_moderator_summary_mode_cache: Dict[str, str] = {}
+_MODERATOR_SUMMARY_MODE_CACHE_TTL = 300  # 5 分钟
+_moderator_summary_mode_cache_time: float = 0
+
+MODERATOR_SUMMARY_MODES = {"disabled", "manual", "per_round", "auto"}
+
+
+async def _get_moderator_summary_mode() -> str:
+    """获取主持人总结模式，带进程内缓存（5 分钟 TTL）。
+    
+    模式说明：
+    - disabled: 禁用主持人总结，不会自动进入 final 阶段
+    - manual: 仅手动点击总结按钮时触发，不自动进入 final 阶段
+    - per_round: 每轮对话后自动启用总结（自动进入 final 阶段）
+    - auto: 裁判判定收敛或达到最大轮数时自动总结（默认行为）
+    """
+    global _moderator_summary_mode_cache_time
+
+    now = time.time()
+    if now - _moderator_summary_mode_cache_time < _MODERATOR_SUMMARY_MODE_CACHE_TTL and _moderator_summary_mode_cache:
+        return _moderator_summary_mode_cache.get("mode", "auto")
+
+    try:
+        from app.models.roundtable_config import RoundtableConfig as DBRoundtableConfig
+        async with AsyncSessionLocal() as db_session:
+            result = await db_session.execute(
+                select(DBRoundtableConfig).where(DBRoundtableConfig.config_key == "moderator_summary_mode")
+            )
+            mode_config = result.scalars().first()
+            mode = mode_config.config_value if mode_config and mode_config.config_value in MODERATOR_SUMMARY_MODES else "auto"
+            _moderator_summary_mode_cache["mode"] = mode
+            _moderator_summary_mode_cache_time = now
+            return mode
+    except Exception:
+        return _moderator_summary_mode_cache.get("mode", "auto")
 
 
 _openai_client_cache: Dict[str, AsyncOpenAI] = {}
@@ -452,26 +690,39 @@ async def _call_llm_text_with_settings(
 ) -> str:
     client = _get_or_create_openai_client(llm_settings)
 
-    async def _do_call(p: str):
-        return await client.chat.completions.create(
-            model=llm_settings["model_name"],
-            messages=[
-                {"role": "system", "content": system_prompt},
+    async def _do_call(p: str, sp: str = system_prompt):
+        kwargs: Dict[str, Any] = {
+            "model": llm_settings["model_name"],
+            "messages": [
+                {"role": "system", "content": sp},
                 {"role": "user", "content": p},
             ],
-            temperature=llm_settings.get("temperature", 0.7) if temperature is None else temperature,
-            stream=False,
-        )
+            "temperature": llm_settings.get("temperature", 0.7) if temperature is None else temperature,
+            "stream": False,
+        }
+        if llm_settings.get("max_tokens") is not None:
+            kwargs["max_tokens"] = llm_settings["max_tokens"]
+        if llm_settings.get("top_p") is not None:
+            kwargs["top_p"] = llm_settings["top_p"]
+        if llm_settings.get("frequency_penalty") is not None:
+            kwargs["frequency_penalty"] = llm_settings["frequency_penalty"]
+        if llm_settings.get("presence_penalty") is not None:
+            kwargs["presence_penalty"] = llm_settings["presence_penalty"]
+        return await client.chat.completions.create(**kwargs)
+
+    context_length = llm_settings.get("context_length") or 8000
+    max_input_tokens = int(context_length * 0.7)
 
     try:
         result = await _do_call(prompt)
     except Exception as exc:
         err_str = str(exc).lower()
         if any(kw in err_str for kw in CONTEXT_EXCEEDED_KEYWORDS):
-            # Retry with second half of the prompt (discard oldest half)
-            mid = len(prompt) // 2
-            truncated = prompt[mid:]
-            result = await _do_call(truncated)
+            # 使用智能截断替代粗暴对半切
+            truncated_sp, truncated_prompt = _truncate_prompt_by_priority(
+                system_prompt, prompt, max_tokens=max_input_tokens,
+            )
+            result = await _do_call(truncated_prompt, truncated_sp)
         else:
             raise
 
@@ -488,25 +739,39 @@ async def _call_llm_stream_with_settings(
 ):
     client = _get_or_create_openai_client(llm_settings)
 
-    async def _do_call(p: str):
-        return await client.chat.completions.create(
-            model=llm_settings["model_name"],
-            messages=[
-                {"role": "system", "content": system_prompt},
+    async def _do_call(p: str, sp: str = system_prompt):
+        kwargs: Dict[str, Any] = {
+            "model": llm_settings["model_name"],
+            "messages": [
+                {"role": "system", "content": sp},
                 {"role": "user", "content": p},
             ],
-            temperature=llm_settings.get("temperature", 0.7) if temperature is None else temperature,
-            stream=True,
-        )
+            "temperature": llm_settings.get("temperature", 0.7) if temperature is None else temperature,
+            "stream": True,
+        }
+        if llm_settings.get("max_tokens") is not None:
+            kwargs["max_tokens"] = llm_settings["max_tokens"]
+        if llm_settings.get("top_p") is not None:
+            kwargs["top_p"] = llm_settings["top_p"]
+        if llm_settings.get("frequency_penalty") is not None:
+            kwargs["frequency_penalty"] = llm_settings["frequency_penalty"]
+        if llm_settings.get("presence_penalty") is not None:
+            kwargs["presence_penalty"] = llm_settings["presence_penalty"]
+        return await client.chat.completions.create(**kwargs)
+
+    context_length = llm_settings.get("context_length") or 8000
+    max_input_tokens = int(context_length * 0.7)
 
     try:
         response = await _do_call(prompt)
     except Exception as exc:
         err_str = str(exc).lower()
         if any(kw in err_str for kw in CONTEXT_EXCEEDED_KEYWORDS):
-            mid = len(prompt) // 2
-            truncated = prompt[mid:]
-            response = await _do_call(truncated)
+            # 使用智能截断替代粗暴对半切
+            truncated_sp, truncated_prompt = _truncate_prompt_by_priority(
+                system_prompt, prompt, max_tokens=max_input_tokens,
+            )
+            response = await _do_call(truncated_prompt, truncated_sp)
         else:
             raise
 
@@ -637,24 +902,38 @@ async def _call_llm_json_with_settings(
     client = _get_or_create_openai_client(llm_settings)
 
     async def _do_call(p: str):
-        return await client.chat.completions.create(
-            model=llm_settings["model_name"],
-            messages=[
+        kwargs: Dict[str, Any] = {
+            "model": llm_settings["model_name"],
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": p},
             ],
-            temperature=0.1,
-            stream=False,
-            response_format={"type": "json_object"},
-        )
+            "temperature": 0.1,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        if llm_settings.get("max_tokens") is not None:
+            kwargs["max_tokens"] = llm_settings["max_tokens"]
+        if llm_settings.get("top_p") is not None:
+            kwargs["top_p"] = llm_settings["top_p"]
+        if llm_settings.get("frequency_penalty") is not None:
+            kwargs["frequency_penalty"] = llm_settings["frequency_penalty"]
+        if llm_settings.get("presence_penalty") is not None:
+            kwargs["presence_penalty"] = llm_settings["presence_penalty"]
+        return await client.chat.completions.create(**kwargs)
+
+    context_length = llm_settings.get("context_length") or 8000
+    max_input_tokens = int(context_length * 0.7)
 
     try:
         response = await _do_call(prompt)
     except Exception as exc:
         err_str = str(exc).lower()
         if any(kw in err_str for kw in CONTEXT_EXCEEDED_KEYWORDS):
-            mid = len(prompt) // 2
-            response = await _do_call(prompt[mid:])
+            truncated_sp, truncated_prompt = _truncate_prompt_by_priority(
+                system_prompt, prompt, max_tokens=max_input_tokens,
+            )
+            response = await _do_call(truncated_prompt)
         else:
             raise
 
@@ -689,7 +968,13 @@ def _build_roundtable_system_prompt(
     ]
     soul_config = role.get("soul_config") or role.get("soulConfig")
     if soul_config:
-        base.extend(["", soul_config])
+        # 安全扫描灵魂配置
+        try:
+            _guard = get_safety_guard()
+            sanitized_soul, _ = _guard.scan_soul_config(soul_config)
+            base.extend(["", sanitized_soul])
+        except Exception:
+            base.extend(["", soul_config])
 
     is_audit = role.get("id") == "audit" or "审计官" in role_name
     if stage == "brief":
@@ -725,7 +1010,13 @@ def _build_roundtable_system_prompt(
 
     system_prompt = _safe_text(payload.get("system_prompt"))
     if system_prompt:
-        base.extend(["", f"补充系统提示词：{system_prompt}"])
+        # 安全扫描用户自定义系统提示词
+        try:
+            _guard = get_safety_guard()
+            sanitized_sp, _ = _guard.scan_system_prompt(system_prompt)
+            base.extend(["", f"补充系统提示词：{sanitized_sp}"])
+        except Exception:
+            base.extend(["", f"补充系统提示词：{system_prompt}"])
     return "\n".join(base)
 
 
@@ -734,7 +1025,6 @@ def _build_roundtable_user_prompt(
     role: Dict[str, Any],
     stage: str,
     user_message: str,
-    transcript: str,
     memory_summary: str,
 ) -> str:
     role_name = role.get("name") or "角色"
@@ -747,11 +1037,8 @@ def _build_roundtable_user_prompt(
     return f"""【讨论阶段】{stage}
 【核心目标】{core_goal}
 【角色身份】{role_name}（{role_stance}）
-【滚动摘要】
+【讨论摘要】
 {memory_summary or '暂无摘要'}
-
-【最近对话】
-{transcript or '暂无历史对话'}
 
 【本轮输入】
 {user_message}
@@ -907,11 +1194,13 @@ async def _evaluate_roundtable(
 
     async def get_progress() -> Dict[str, Any]:
         try:
-            return await _call_llm_json_with_settings(
+            result = await _call_llm_json_with_settings(
                 llm_settings,
                 _build_progress_prompt(prompt_payload),
                 "你是一个公正严谨的裁判大模型，只输出 JSON。",
             )
+            result["success"] = True
+            return result
         except Exception as exc:
             return {
                 "score": 0,
@@ -920,21 +1209,25 @@ async def _evaluate_roundtable(
                 "consensusCount": 0,
                 "resolvedPainPoints": 0,
                 "nextFocus": "继续围绕核心目标补足证据和执行路径",
+                "success": False,
             }
 
     async def get_board() -> Dict[str, Any]:
         try:
-            return await _call_llm_json_with_settings(
+            result = await _call_llm_json_with_settings(
                 llm_settings,
                 _build_board_prompt(prompt_payload),
                 "你是一个高信噪比的会议书记员，只输出 JSON。",
             )
+            result["success"] = True
+            return result
         except Exception as exc:
             return {
                 "summary": f"共识板生成失败：{exc}",
                 "consensus": [],
                 "disputes": [],
                 "nextQuestions": ["请继续围绕核心目标补充高价值观点"],
+                "success": False,
             }
 
     judge_state, board_state = await asyncio.gather(get_progress(), get_board())
@@ -947,27 +1240,45 @@ async def _generate_role_reply_stream(
     role: Dict[str, Any],
     stage: str,
     user_message: str,
-    transcript: str,
     memory_summary: str,
     task_id: str,
     current_messages: list,
     base_result_payload: dict,
     msg_id: str,
+    cancel_event: asyncio.Event,
 ) -> Dict[str, Any]:
     content = ""
+    # 通过 msg_id 找到对应的消息索引
+    msg_idx = None
+    for i, msg in enumerate(current_messages):
+        if msg.get("id") == msg_id:
+            msg_idx = i
+            break
+    if msg_idx is None:
+        msg_idx = len(current_messages) - 1  # 回退到兼容模式
+    
+    # 保留角色开始发言的时间戳，确保消息时间顺序正确
+    original_created_at = current_messages[msg_idx].get("created_at") or _utcnow().isoformat()
+    
     try:
-        prompt = _build_roundtable_user_prompt(payload, role, stage, user_message, transcript, memory_summary)
+        prompt = _build_roundtable_user_prompt(payload, role, stage, user_message, memory_summary)
         system_prompt = _build_roundtable_system_prompt(payload, role, stage)
         
         last_update_time = time.time()
         
         async for chunk in _call_llm_stream_with_settings(llm_settings, prompt, system_prompt):
+            # 检查取消信号
+            if cancel_event.is_set():
+                content += "\n> (已取消)"
+                break
+
             content += chunk
             
-            # Throttle updates to avoid overwhelming the frontend
+            # Throttle updates to align with SSE poll interval (0.35s)
             now = time.time()
-            if now - last_update_time > 0.1:  # Update every 100ms
-                current_messages[-1]["content"] = content
+            if now - last_update_time > 0.3:
+                current_messages[msg_idx]["content"] = content
+                current_messages[msg_idx]["streaming"] = True
                 await _set_task_state(
                     task_id, 
                     result_payload={
@@ -988,6 +1299,7 @@ async def _generate_role_reply_stream(
 
     # 立即将已完成的流式消息落库并推送给前端，不等待摘要生成
     # 摘要由调用方通过 asyncio.create_task 并发生成，不阻塞下一个角色的流式输出
+    # created_at 使用角色开始发言的时间，保证发言顺序与时间戳顺序一致
     final_msg: Dict[str, Any] = {
         "id": msg_id,
         "speaker_id": role.get("id") or "",
@@ -997,17 +1309,22 @@ async def _generate_role_reply_stream(
         "summary": "",          # 由调用方并发填充
         "summary_metrics": None,
         "streaming": False,
-        "created_at": _utcnow().isoformat(),
+        "created_at": original_created_at,
     }
 
-    current_messages[-1] = final_msg
+    current_messages[msg_idx] = final_msg
+    # 使用 persist=False 快速推送，调用方会在外层做 persist=True 落库
+    # 避免双重 persist=True 导致的 DB 写入延迟堆积
     await _set_task_state(
         task_id,
         result_payload={
             **base_result_payload,
             "messages": current_messages,
         },
+        persist=False,
     )
+    # 让出事件循环，确保 SSE 推送事件能被前端及时消费
+    await asyncio.sleep(0.05)
     return final_msg
 
 
@@ -1018,6 +1335,7 @@ async def _process_roundtable_task(task_id: str) -> None:
 
     start_time = time.perf_counter()
     room_id = payload.get("room_id")
+    cancel_event = _register_task_cancel_event(task_id)
     try:
         llm_settings = await _load_llm_settings(payload["model_id"])
         await _set_task_state(task_id, status="running", started=True)
@@ -1050,6 +1368,23 @@ async def _process_roundtable_task(task_id: str) -> None:
         max_dialogue_rounds = max(int(payload.get("max_dialogue_rounds") or 1), 1)
         current_round = int(payload.get("auto_round_count") or 0)
         memory_summary = _safe_text(payload.get("memory_summary"))
+        auxiliary_model_id = payload.get("auxiliary_model_id")
+
+        # 初始化分层记忆（如果传入了 structured_memory）
+        _memory_mgr = MemoryManager()
+        structured_memory_data = payload.get("structured_memory")
+        _memory_mgr.initialize(raw_summary=memory_summary, structured_data=structured_memory_data)
+
+        # 初始化上下文压缩器
+        context_length = llm_settings.get("context_length") or 8000
+        _compressor = ContextCompressor(context_length=context_length)
+
+        # 读取主持人总结模式：请求级覆盖 > 数据库配置 > 默认 auto
+        request_summary_mode = payload.get("moderator_summary_mode")
+        if request_summary_mode and request_summary_mode in MODERATOR_SUMMARY_MODES:
+            moderator_summary_mode = request_summary_mode
+        else:
+            moderator_summary_mode = await _get_moderator_summary_mode()
 
         base_result_payload: Dict[str, Any] = {
             "messages": current_messages,
@@ -1062,13 +1397,20 @@ async def _process_roundtable_task(task_id: str) -> None:
             "memory_summary": memory_summary,
             "active_role_ids": [role.get("id") for role in roles],
             "last_user_message": user_message,
+            "moderator_summary_mode": moderator_summary_mode,
         }
         await _set_task_state(task_id, result_payload=base_result_payload)
 
         last_checked_msg_index = max(0, len(current_messages) - 1)
 
+        # ---- 群聊模式：角色逐个发言，像真实群聊一样 ----
+        # 跟踪本轮（一圈）内已发言的角色索引，一圈完成后才做评委评估
+        turns_in_current_cycle = 0  # 本圈已发言次数
+        judge_state: Optional[Dict[str, Any]] = None
+        board_state: Optional[Dict[str, Any]] = None
+
         while True:
-            if await _is_cancel_requested(task_id):
+            if cancel_event.is_set() or await _is_cancel_requested(task_id):
                 canceled_payload = {**base_result_payload, "messages": current_messages}
                 await _set_task_state(
                     task_id,
@@ -1090,8 +1432,7 @@ async def _process_roundtable_task(task_id: str) -> None:
                 content = current_messages[i].get("content", "")
                 for role in roles:
                     role_name = role.get("name", "")
-                    # 匹配 @角色名，可能后面跟着空格或标点
-                    import re
+                    # 匹配 @角色名，可能后面跟着空格或标点（使用 re.escape 防止特殊字符误匹配）
                     if role_name and re.search(r'@' + re.escape(role_name) + r'(?:\s|[^\w]|$)', content):
                         mentioned_role = role
                         break
@@ -1101,17 +1442,8 @@ async def _process_roundtable_task(task_id: str) -> None:
             # 更新已检查的索引，下一轮只检查新产生的消息
             last_checked_msg_index = len(current_messages)
 
-            # 获取调度模式配置
-            scheduling_mode = "single_round_robin" # 默认单角色轮询
-            try:
-                from app.models.roundtable_config import RoundtableConfig as DBRoundtableConfig
-                async with AsyncSessionLocal() as db_session:
-                    result = await db_session.execute(select(DBRoundtableConfig).where(DBRoundtableConfig.config_key == "role_scheduling_mode"))
-                    mode_config = result.scalars().first()
-                    if mode_config and mode_config.config_value:
-                        scheduling_mode = mode_config.config_value
-            except Exception:
-                pass
+            # 获取调度模式配置（带进程内缓存）
+            scheduling_mode = await _get_scheduling_mode()
 
             if mentioned_role:
                 speaking_roles = [mentioned_role]
@@ -1124,25 +1456,36 @@ async def _process_roundtable_task(task_id: str) -> None:
                 speaking_roles = [random.choice(roles)]
                 schedule_reason = "single_random"
             elif scheduling_mode == "host_specify":
-                # 由主持人(LLM)决定下一位发言人
-                transcript_for_host = _build_recent_transcript(current_messages, memory_summary=memory_summary, max_messages=6, max_chars=2000)
+                # 由主持人(LLM)决定下一位发言人，使用 JSON 结构化输出
                 role_names = [r.get("name", "未知") for r in roles]
-                prompt_for_host = f"【最近对话】\n{transcript_for_host}\n\n【候选角色】\n{', '.join(role_names)}\n\n请根据上下文，决定下一位最适合发言的角色是谁。只需输出角色名，不要输出任何其他内容。如果无法决定，请输出随机角色名。"
-                system_prompt_for_host = "你是一个会议主持人，只负责指定下一位发言人。"
+                prompt_for_host = f"""【讨论摘要】
+{memory_summary or '暂无摘要'}
+
+【候选角色】
+{json.dumps(role_names, ensure_ascii=False)}
+
+请根据讨论进展，决定下一位最适合发言的角色。
+严格输出 JSON：{{"chosen_role": "角色名"}}"""
+                system_prompt_for_host = "你是一个会议主持人，只负责指定下一位发言人。只输出 JSON。"
                 try:
-                    result_text = await _call_llm_text_with_settings(llm_settings, prompt_for_host, system_prompt_for_host, temperature=0.1)
-                    # 尝试精确匹配
-                    chosen_role = next((r for r in roles if r.get("name", "") == result_text.strip()), None)
-                    # 如果没有精确匹配，尝试模糊匹配
+                    host_result = await _call_llm_json_with_settings(
+                        llm_settings, prompt_for_host, system_prompt_for_host,
+                    )
+                    chosen_name = str(host_result.get("chosen_role", "")).strip()
+                    # 精确匹配
+                    chosen_role = next((r for r in roles if r.get("name", "") == chosen_name), None)
+                    # 模糊匹配：角色名包含在返回值中
+                    if not chosen_role and chosen_name:
+                        chosen_role = next((r for r in roles if r.get("name", "") in chosen_name or chosen_name in r.get("name", "")), None)
+                    # 仍然未匹配，按轮询降级（比随机更可预测）
                     if not chosen_role:
-                        chosen_role = next((r for r in roles if r.get("name", "") in result_text), None)
-                    if not chosen_role:
-                        import random
-                        chosen_role = random.choice(roles)
+                        fallback_idx = current_round % len(roles)
+                        chosen_role = roles[fallback_idx]
                     speaking_roles = [chosen_role]
                 except Exception:
-                    import random
-                    speaking_roles = [random.choice(roles)]
+                    # 降级为轮询
+                    fallback_idx = current_round % len(roles)
+                    speaking_roles = [roles[fallback_idx]]
                 schedule_reason = "host_specify"
             else: # single_round_robin
                 role_index = current_round % len(roles)
@@ -1171,47 +1514,65 @@ async def _process_roundtable_task(task_id: str) -> None:
             pending_summary_tasks: List[tuple] = []
 
             # 顺序流式生成各角色回复——前端可实时看到每个角色逐字输出
-            for role in speaking_roles:
+            for idx, role in enumerate(speaking_roles):
                 # 1. 广播该角色"正在输入"的状态
-                temp_msg_id = f"m_{role.get('id', 'agent')}_{uuid.uuid4().hex[:10]}"
-                typing_msg = {
-                    "id": temp_msg_id,
-                    "speaker_id": role.get("id") or "",
-                    "speaker_name": role.get("name") or "角色",
-                    "speaker_type": "agent",
-                    "content": "正在组织语言...",
-                    "streaming": True,
-                    "created_at": _utcnow().isoformat(),
-                }
-                current_messages.append(typing_msg)
-                base_result_payload = {
-                    **base_result_payload,
-                    "messages": current_messages,
-                }
-                await _set_task_state(task_id, result_payload=base_result_payload)
+                # 检查是否已存在该角色的 typing 消息（由 roundtable-runs 端点预创建）
+                existing_typing_idx = None
+                for i, msg in enumerate(current_messages):
+                    if (msg.get("speaker_id") == role.get("id") and 
+                        msg.get("speaker_type") == "agent" and 
+                        msg.get("streaming") is True and
+                        msg.get("content") == "正在组织语言..."):
+                        existing_typing_idx = i
+                        break
+                
+                if existing_typing_idx is not None:
+                    # 复用已存在的 typing 消息
+                    temp_msg_id = current_messages[existing_typing_idx]["id"]
+                    # 确保后发言角色的 created_at 严格晚于先发言角色
+                    if idx > 0:
+                        current_messages[existing_typing_idx]["created_at"] = _utcnow().isoformat()
+                else:
+                    # 创建新的 typing 消息
+                    temp_msg_id = f"m_{role.get('id', 'agent')}_{uuid.uuid4().hex[:10]}"
+                    # 确保后发言角色的 created_at 严格晚于先发言角色
+                    role_created_at = _utcnow().isoformat()
+                    typing_msg = {
+                        "id": temp_msg_id,
+                        "speaker_id": role.get("id") or "",
+                        "speaker_name": role.get("name") or "角色",
+                        "speaker_type": "agent",
+                        "content": "正在组织语言...",
+                        "streaming": True,
+                        "created_at": role_created_at,
+                    }
+                    current_messages.append(typing_msg)
+                    base_result_payload = {
+                        **base_result_payload,
+                        "messages": current_messages,
+                    }
+                    # typing 状态使用 persist=False 快速推送，减少 DB 写入延迟
+                    await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
 
-                # 2. 实时构建上下文（不含正在输入的占位消息）
-                transcript = _build_recent_transcript(
-                    [m for m in current_messages if not m.get("streaming")],
-                    memory_summary=memory_summary,
-                    max_messages=8,
-                    max_chars=2600,
-                )
-
-                # 3. 流式生成回复并立即落库推送（函数内不再阻塞等待摘要）
-                current_messages[-1]["content"] = ""
+                # 2. 流式生成回复并立即落库推送（函数内不再阻塞等待摘要）
+                # 立即将 content 置空并推送，确保前端从"正在输入"平滑过渡到流式内容
+                # 找到 typing 消息的索引（可能是预创建的或刚添加的）
+                typing_idx = existing_typing_idx if existing_typing_idx is not None else len(current_messages) - 1
+                current_messages[typing_idx]["content"] = ""
+                base_result_payload = {**base_result_payload, "messages": current_messages}
+                await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
                 role_message = await _generate_role_reply_stream(
                     llm_settings,
                     payload,
                     role,
                     current_stage,
                     user_message,
-                    transcript,
                     memory_summary,
                     task_id,
                     current_messages,
                     base_result_payload,
                     temp_msg_id,
+                    cancel_event,
                 )
 
                 # 4. 立即以 create_task 启动摘要生成，与下一个角色的流式输出并发执行
@@ -1221,7 +1582,9 @@ async def _process_roundtable_task(task_id: str) -> None:
                 pending_summary_tasks.append((role_message["id"], summary_task))
 
                 # 5. 使用 content 更新内存摘要（摘要字段此时为空，不影响上下文构建）
-                memory_summary = _merge_memory_summary(memory_summary, [role_message])
+                # 优先使用分层记忆管理器，向后兼容
+                _memory_mgr.update_from_message(role_message)
+                memory_summary = _memory_mgr.get_flat_summary()
                 base_result_payload = {
                     **base_result_payload,
                     "messages": current_messages,
@@ -1229,32 +1592,106 @@ async def _process_roundtable_task(task_id: str) -> None:
                 }
                 await _set_task_state(task_id, result_payload=base_result_payload)
 
-            # 6. 所有角色流式输出完成后，统一 gather 并发的摘要任务并回填消息
+                # 群聊模式下（single_round_robin），角色发言后直接轮到下一个角色
+                # 不做逐轮评委评估，等一圈完成后再评估
+                turns_in_current_cycle += 1
+
+            # 6. 各角色摘要并发生成，完成一个即推送一次，避免长时间无任何 SSE/缓存更新
             if pending_summary_tasks:
                 msg_id_to_idx: Dict[str, int] = {
                     msg["id"]: idx for idx, msg in enumerate(current_messages)
                 }
-                summary_results = await asyncio.gather(
-                    *[task for _, task in pending_summary_tasks],
-                    return_exceptions=True,
-                )
+                task_to_msg_id: Dict[asyncio.Task, str] = {
+                    summary_task: m_id for m_id, summary_task in pending_summary_tasks
+                }
+                pending_summary_set = set(task_to_msg_id.keys())
                 summary_updated = False
-                for (m_id, _), result in zip(pending_summary_tasks, summary_results):
-                    if isinstance(result, Exception):
-                        continue
-                    idx = msg_id_to_idx.get(m_id)
-                    if idx is not None:
+                while pending_summary_set:
+                    done, pending_summary_set = await asyncio.wait(
+                        pending_summary_set, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for finished in done:
+                        m_id = task_to_msg_id.get(finished)
+                        if not m_id:
+                            continue
+                        try:
+                            result = finished.result()
+                        except Exception:
+                            continue
+                        if isinstance(result, Exception):
+                            continue
+                        idx = msg_id_to_idx.get(m_id)
+                        if idx is None:
+                            continue
                         current_messages[idx]["summary"] = result.get("summary", "")
                         current_messages[idx]["summary_metrics"] = result.get("summary_metrics")
                         summary_updated = True
+                        await _set_task_state(
+                            task_id,
+                            result_payload={**base_result_payload, "messages": list(current_messages)},
+                            persist=False,
+                        )
                 if summary_updated:
-                    base_result_payload = {**base_result_payload, "messages": current_messages}
+                    # 摘要全部就绪后重建 memory_summary，供裁判与下一轮使用
+                    # 使用快照而非引用，避免并发修改（streaming 消息的 content 可能被实时更新）
+                    messages_snapshot = [dict(m) for m in current_messages if not m.get("streaming")]
+                    # 优先使用分层记忆管理器重建
+                    for snap_msg in messages_snapshot:
+                        _memory_mgr.update_from_message(snap_msg)
+                    memory_summary = _memory_mgr.get_flat_summary()
+                    base_result_payload = {
+                        **base_result_payload,
+                        "messages": current_messages,
+                        "memory_summary": memory_summary,
+                    }
                     await _set_task_state(task_id, result_payload=base_result_payload)
 
             if current_stage == "brief":
                 current_round += 1
 
-            # 广播裁判/主持人“正在总结思考”的状态
+            # ---- 上下文压缩（智能摘要替代粗暴截断）----
+            try:
+                if _compressor.should_compress_preflight(current_messages):
+                    # 使用辅助模型进行压缩
+                    _model_router = get_model_router()
+                    compress_settings = await _model_router.get_settings_for_task(
+                        llm_settings, auxiliary_model_id, TaskType.CONTEXT_COMPRESS,
+                    )
+                    _compress_caller = build_compressor_llm_caller(compress_settings)
+                    compressed = await _compressor.compress(current_messages, _compress_caller)
+                    if compressed is not current_messages:
+                        current_messages = compressed
+                        base_result_payload = {**base_result_payload, "messages": current_messages}
+                        await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
+            except Exception as _comp_err:
+                logger.warning("上下文压缩失败（不影响讨论继续）: %s", _comp_err)
+
+            # ---- 群聊节流评估 ----
+            # 判断是否需要在本轮进行评委评估：
+            # - single_round_robin: 每圈（所有角色都发过一次言）评估一次
+            # - 其他模式: 每轮都评估（保持原有行为）
+            need_evaluation_this_turn = True
+            if scheduling_mode == "single_round_robin" and schedule_reason == "single_round_robin":
+                # 一圈 = 所有角色都发过一次言
+                if turns_in_current_cycle < len(roles):
+                    need_evaluation_this_turn = False
+                else:
+                    turns_in_current_cycle = 0  # 重置计数，开始新的一圈
+
+            if not need_evaluation_this_turn:
+                # 群聊模式：角色发完言直接继续下一轮，不插入评委评估
+                # 但仍需更新 auto_round_count 以保证前端进度条正确
+                base_result_payload = {
+                    **base_result_payload,
+                    "messages": current_messages,
+                    "auto_round_count": current_round,
+                }
+                await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
+                # 直接进入下一轮，主持人不发引导语
+                continue
+
+            # ---- 评委评估（每圈一次，或非 single_round_robin 模式） ----
+            # 广播裁判/主持人"正在总结思考"的状态
             temp_host_id = f"m_host_{uuid.uuid4().hex[:10]}"
             typing_host_msg = {
                 "id": temp_host_id,
@@ -1285,6 +1722,9 @@ async def _process_roundtable_task(task_id: str) -> None:
             
             judge_state = evaluation["judge_state"]
             board_state = evaluation["consensus_board"]
+            # 更新分层记忆的共识/分歧层
+            _memory_mgr.update_from_board(board_state)
+            memory_summary = _memory_mgr.get_flat_summary()
             canvas_items = _build_canvas_items(board_state, current_stage)
 
             base_result_payload = {
@@ -1345,7 +1785,27 @@ async def _process_roundtable_task(task_id: str) -> None:
 
             reached_expected_result = bool(judge_state.get("reached"))
             reached_max_round = current_round >= max_dialogue_rounds
-            if reached_expected_result or reached_max_round:
+
+            # 根据主持人总结模式决定是否自动进入 final 阶段
+            # disabled/manual 模式下不自动进入 final，只能由用户手动触发
+            # per_round 模式下每轮都进入 final
+            # auto 模式下裁判判定收敛或达到最大轮数时自动进入 final
+            summary_mode = moderator_summary_mode
+            should_converge = False
+            if summary_mode == "disabled":
+                # 禁用总结：永远不自动进入 final
+                should_converge = False
+            elif summary_mode == "manual":
+                # 仅手动总结：不自动进入 final
+                should_converge = False
+            elif summary_mode == "per_round":
+                # 每轮总结：每圈评估后都进入 final
+                should_converge = True
+            else:
+                # auto（默认）：裁判判定收敛或达到最大轮数
+                should_converge = reached_expected_result or reached_max_round
+
+            if should_converge:
                 current_stage = "final"
                 user_message = (
                     (payload.get("prompt_templates") or {}).get("prompt_converge_trigger")
@@ -1369,10 +1829,33 @@ async def _process_roundtable_task(task_id: str) -> None:
                     "stage": current_stage,
                     "last_user_message": user_message,
                     "memory_summary": memory_summary,
-                    "transition_reason": "expected_result_reached" if reached_expected_result else "max_round_reached",
+                    "transition_reason": "expected_result_reached" if reached_expected_result else "max_round_reached" if reached_max_round else "per_round_summary",
                 }
                 await _set_task_state(task_id, result_payload=base_result_payload)
                 continue
+
+            # disabled/manual 模式下达到最大轮数时，停止讨论但不进入 final
+            if (summary_mode in ("disabled", "manual")) and reached_max_round:
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                await _set_task_state(
+                    task_id,
+                    status="completed",
+                    result_payload={**base_result_payload, "final_generated": False},
+                    finished=True,
+                )
+                await _record_event(
+                    room_id=room_id,
+                    task_id=task_id,
+                    event_type="task.roundtable_orchestration.completed",
+                    event_payload={
+                        "stage": current_stage,
+                        "auto_round_count": current_round,
+                        "message_count": len(current_messages),
+                        "summary_mode": summary_mode,
+                    },
+                    duration_ms=duration_ms,
+                )
+                return
 
             next_prompt = _safe_text(judge_state.get("nextFocus")) or "请继续围绕期望结果推进，补足关键证据、约束和执行路径。"
             user_message = f"请继续推进：{next_prompt}"
@@ -1411,6 +1894,7 @@ async def _process_roundtable_task(task_id: str) -> None:
         )
     finally:
         await cache_delete(f"{TASK_STATE_PREFIX}{task_id}")
+        _unregister_task_cancel_event(task_id)
 
 
 async def _process_runtime_task(task_id: str) -> None:
@@ -1532,4 +2016,28 @@ async def _create_task(
         },
         db,
     )
+
+
+async def cleanup_old_tasks(max_age_hours: int = 72) -> int:
+    """清理超过指定时间的已完成任务的大字段（保留任务记录，释放 result_payload 空间）。"""
+    from datetime import timedelta
+    cutoff = _utcnow() - timedelta(hours=max_age_hours)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(RuntimeTask).where(
+                RuntimeTask.status.in_(["completed", "failed", "canceled"]),
+                RuntimeTask.finished_at < cutoff,
+            )
+        )
+        old_tasks = result.scalars().all()
+        count = len(old_tasks)
+        for task in old_tasks:
+            # 只清理 result_payload 中的大字段，保留任务记录本身
+            if isinstance(task.result_payload, dict):
+                task.result_payload = {
+                    "cleaned": True,
+                    "original_message_count": len(task.result_payload.get("messages", [])),
+                }
+        await db.commit()
+        return count
 

@@ -74,6 +74,30 @@ async def lifespan(app: FastAPI):
                     connection.execute(sa_text(
                         "ALTER TABLE llm_configs ADD COLUMN enable_thinking TINYINT(1) DEFAULT 0"
                     ))
+                if 'max_tokens' not in cols:
+                    connection.execute(sa_text(
+                        "ALTER TABLE llm_configs ADD COLUMN max_tokens INT DEFAULT NULL"
+                    ))
+                if 'top_p' not in cols:
+                    connection.execute(sa_text(
+                        "ALTER TABLE llm_configs ADD COLUMN top_p FLOAT DEFAULT NULL"
+                    ))
+                if 'context_length' not in cols:
+                    connection.execute(sa_text(
+                        "ALTER TABLE llm_configs ADD COLUMN context_length INT DEFAULT NULL"
+                    ))
+                if 'frequency_penalty' not in cols:
+                    connection.execute(sa_text(
+                        "ALTER TABLE llm_configs ADD COLUMN frequency_penalty FLOAT DEFAULT NULL"
+                    ))
+                if 'presence_penalty' not in cols:
+                    connection.execute(sa_text(
+                        "ALTER TABLE llm_configs ADD COLUMN presence_penalty FLOAT DEFAULT NULL"
+                    ))
+                if 'auxiliary_model_id' not in cols:
+                    connection.execute(sa_text(
+                        "ALTER TABLE llm_configs ADD COLUMN auxiliary_model_id INT DEFAULT NULL"
+                    ))
         await conn.run_sync(_auto_migrate)
     app_logger.info("Database tables initialized")
 

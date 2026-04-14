@@ -31,9 +31,12 @@ interface MessageItemProps {
 const MessageItem = memo(function MessageItem({ item, isExpanded, replyViewMode, onToggleExpand }: MessageItemProps) {
   const isHost = item.speakerType === 'host';
   const canUseCompact = item.speakerType === 'agent' && replyViewMode === 'compact';
+  const typingPlaceholder = item.speakerType === 'host'
+    ? '主持人正在输入...'
+    : `${item.speakerName || '当前角色'}正在输入...`;
   const displayContent = canUseCompact && !isExpanded
-    ? (item.summary?.trim() || (item.summaryStatus === 'loading' ? '正在提炼核心要点...' : item.content || '正在思考...'))
-    : (item.content || '正在思考...');
+    ? (item.summary?.trim() || (item.summaryStatus === 'loading' ? '正在提炼核心要点...' : item.content || (item.streaming ? typingPlaceholder : '正在思考...')))
+    : (item.content || (item.streaming ? typingPlaceholder : '正在思考...'));
 
   return (
     <List.Item
@@ -65,7 +68,7 @@ const MessageItem = memo(function MessageItem({ item, isExpanded, replyViewMode,
               <Space wrap>
                 <Text strong>{item.speakerName}</Text>
                 {isHost && <Tag color="gold">调度</Tag>}
-                {item.streaming && <Tag color="processing">流式中</Tag>}
+                {item.streaming && <Tag color="processing">正在输入</Tag>}
                 {canUseCompact && !isExpanded && <Tag color="blue">精简模式</Tag>}
                 {canUseCompact && isExpanded && <Tag color="gold">原文展开</Tag>}
               </Space>
@@ -121,6 +124,17 @@ export function StepRoundtableView({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
+  const activeStreamingMessages = messages.filter((item) => item.streaming && item.speakerType !== 'user');
+  const activeStreamingNames = Array.from(
+    new Set(
+      activeStreamingMessages
+        .map((item) => item.speakerName?.trim())
+        .filter((name): name is string => Boolean(name)),
+    ),
+  );
+  const activeTypingLabel = activeStreamingNames.length > 0
+    ? `当前正在输入：${activeStreamingNames.join('、')}`
+    : '';
 
   const handleToggle = useCallback((id: string) => {
     onToggleExpandedMessage(id);
@@ -145,6 +159,7 @@ export function StepRoundtableView({
                 <Space>
                   <span>圆桌空间</span>
                   <Tag>{messages.length}</Tag>
+                  {activeTypingLabel && <Tag color="processing">{activeTypingLabel}</Tag>}
                 </Space>
                 <Space>
                   <Text type="secondary" style={{ fontSize: 12 }}>回复展示</Text>
@@ -188,6 +203,12 @@ export function StepRoundtableView({
                       onToggleExpand={handleToggle}
                     />
                   )}
+                  pagination={messages.length > 50 ? {
+                    pageSize: 50,
+                    size: 'small',
+                    position: 'both',
+                    showTotal: (total) => `共 ${total} 条`,
+                  } : undefined}
                 />
               </div>
             )}

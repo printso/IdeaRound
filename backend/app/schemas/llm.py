@@ -12,6 +12,12 @@ class LLMConfigBase(BaseModel):
     is_active: bool = True
     enable_thinking: bool = False
     temperature: float = 0.7
+    max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
+    context_length: Optional[int] = None
+    frequency_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    auxiliary_model_id: Optional[int] = None
 
 class LLMConfigCreate(LLMConfigBase):
     pass
@@ -26,6 +32,12 @@ class LLMConfigUpdate(BaseModel):
     is_active: Optional[bool] = None
     enable_thinking: Optional[bool] = None
     temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
+    context_length: Optional[int] = None
+    frequency_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    auxiliary_model_id: Optional[int] = None
 
 class LLMConfigResponse(LLMConfigBase):
     id: int
@@ -40,3 +52,4 @@ class LLMChatStreamRequest(BaseModel):
     message: str
     system_prompt: Optional[str] = None
     enable_thinking: bool = False
+    max_tokens: Optional[int] = None

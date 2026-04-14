@@ -220,6 +220,12 @@ DEFAULT_ROUNDTABLE_CONFIGS = [
         "description": "触发收敛阶段的用户消息",
         "is_active": True,
     },
+    {
+        "config_key": "moderator_summary_mode",
+        "config_value": "per_round",
+        "description": "主持人总结模式：disabled=禁用主持人总结；manual=仅手动点击总结按钮时触发；per_round=每轮对话后自动启用总结；auto=裁判判定收敛或达到最大轮数时自动总结",
+        "is_active": True,
+    },
 ]
 
 # 默认场景模板

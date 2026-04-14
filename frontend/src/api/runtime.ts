@@ -50,6 +50,9 @@ export interface RuntimeRoundtableRunRequest {
   roles: RuntimeRoundtableRole[];
   prior_messages: RuntimeRoundtableMessage[];
   trigger?: string;
+  moderator_summary_mode?: 'disabled' | 'manual' | 'per_round' | 'auto';
+  auxiliary_model_id?: number;
+  structured_memory?: Record<string, unknown>;
 }
 
 export interface RuntimeTaskResponse {

@@ -12,6 +12,11 @@ export interface LLMConfig {
   is_active: boolean;
   enable_thinking: boolean;
   temperature: number;
+  max_tokens?: number;
+  top_p?: number;
+  context_length?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
   created_at: string;
   updated_at?: string;
 }
@@ -25,6 +30,11 @@ export interface LLMConfigCreate {
   is_active?: boolean;
   enable_thinking?: boolean;
   temperature?: number;
+  max_tokens?: number;
+  top_p?: number;
+  context_length?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
 }
 
 export interface LLMConfigUpdate {
@@ -36,6 +46,12 @@ export interface LLMConfigUpdate {
   is_active?: boolean;
   enable_thinking?: boolean;
   temperature?: number;
+  max_tokens?: number;
+  top_p?: number;
+  context_length?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  auxiliary_model_id?: number;
 }
 
 export const getLLMConfigs = async () => {
@@ -67,6 +83,7 @@ export interface LLMChatStreamRequest {
   message: string;
   system_prompt?: string;
   enable_thinking?: boolean;
+  max_tokens?: number;
 }
 
 export const streamChatByLLMConfig = async (

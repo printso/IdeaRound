@@ -99,6 +99,16 @@ async def stream_chat_by_llm_config(
                 "temperature": llm_config.temperature,
                 "stream": True,
             }
+            # 请求级 max_tokens 优先于模型配置
+            effective_max_tokens = body.max_tokens if body.max_tokens is not None else llm_config.max_tokens
+            if effective_max_tokens is not None:
+                create_kwargs["max_tokens"] = effective_max_tokens
+            if llm_config.top_p is not None:
+                create_kwargs["top_p"] = llm_config.top_p
+            if llm_config.frequency_penalty is not None:
+                create_kwargs["frequency_penalty"] = llm_config.frequency_penalty
+            if llm_config.presence_penalty is not None:
+                create_kwargs["presence_penalty"] = llm_config.presence_penalty
 
             stream = await client.chat.completions.create(**create_kwargs)
             async for chunk in stream:
@@ -159,12 +169,24 @@ async def sync_chat_by_llm_config(
             messages.append({"role": "system", "content": body.system_prompt})
         messages.append({"role": "user", "content": body.message})
         
-        response = await client.chat.completions.create(
-            model=llm_config.model_name,
-            messages=messages,
-            temperature=llm_config.temperature,
-            stream=False,
-        )
+        sync_kwargs: dict = {
+            "model": llm_config.model_name,
+            "messages": messages,
+            "temperature": llm_config.temperature,
+            "stream": False,
+        }
+        # 请求级 max_tokens 优先于模型配置
+        effective_max_tokens = body.max_tokens if body.max_tokens is not None else llm_config.max_tokens
+        if effective_max_tokens is not None:
+            sync_kwargs["max_tokens"] = effective_max_tokens
+        if llm_config.top_p is not None:
+            sync_kwargs["top_p"] = llm_config.top_p
+        if llm_config.frequency_penalty is not None:
+            sync_kwargs["frequency_penalty"] = llm_config.frequency_penalty
+        if llm_config.presence_penalty is not None:
+            sync_kwargs["presence_penalty"] = llm_config.presence_penalty
+
+        response = await client.chat.completions.create(**sync_kwargs)
         content = response.choices[0].message.content or ""
         return {"content": content}
     except Exception as exc:
