@@ -54,13 +54,13 @@ export const scoreByIntent = (text: string, keywords: string[], isFinal: boolean
 };
 
 export const extractDeliverableFindings = (
-  intentAnchor: string,
+  topic: string,
   expectedResult: string,
   messages: MessageItem[],
   canvasConsensus: string[],
   roundtableStage: 'brief' | 'final',
 ) => {
-  const keywords = extractKeywordCandidates(`${intentAnchor} ${expectedResult}`);
+  const keywords = extractKeywordCandidates(`${topic} ${expectedResult}`);
   const agentMessages = messages.filter((item) => item.speakerType === 'agent');
   const candidates: Array<{ text: string; score: number }> = [];
 

@@ -193,6 +193,20 @@ async def _publish_task_stream_event(
         await publish_event(f"{TASK_CHANNEL_PREFIX}{task_id}", event_message)
 
 
+async def _publish_task_stream_payload(task_id: str, payload: Dict[str, Any]) -> None:
+    queues = TASK_STREAM_QUEUES.get(task_id, [])
+    stale_queues: List[asyncio.Queue[Dict[str, Any]]] = []
+    for queue in queues:
+        try:
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            stale_queues.append(queue)
+    for queue in stale_queues:
+        _unsubscribe_task_stream(task_id, queue)
+    if is_redis_available():
+        await publish_event(f"{TASK_CHANNEL_PREFIX}{task_id}", payload)
+
+
 def _format_sse_message(event: str, data: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -408,16 +422,11 @@ def _build_progress_prompt(payload: Dict[str, Any]) -> str:
     expected_result = payload.get("expected_result") or "推动讨论形成高质量结论"
     transcript = (payload.get("transcript") or "无").strip()[-4000:]
     current_round = payload.get("current_round") or 0
-    intent_card = payload.get("intent_card") or {}
-    core_goal = intent_card.get("coreGoal") or intent_card.get("core_goal") or "未提供"
-    pain_points = intent_card.get("painPoints") or intent_card.get("pain_points") or "未提供"
-    constraints = intent_card.get("constraints") or "未提供"
+    user_demand = _safe_text(payload.get("initial_demand")) or _safe_text(payload.get("user_message")) or "未提供"
     return f"""你是圆桌讨论的后台裁判。
-请根据目标、约束、痛点与当前讨论内容，评估当前讨论的收敛进度与完成质量。
+请根据原始需求与当前讨论内容，评估当前讨论的收敛进度与完成质量。
 
-【核心目标】{core_goal}
-【限制条件】{constraints}
-【核心痛点】{pain_points}
+【原始需求】{user_demand}
 【期望结果】{expected_result}
 【当前轮次】{current_round}
 【讨论内容】
@@ -437,12 +446,11 @@ def _build_progress_prompt(payload: Dict[str, Any]) -> str:
 def _build_board_prompt(payload: Dict[str, Any]) -> str:
     transcript = (payload.get("transcript") or "无").strip()[-4000:]
     expected_result = payload.get("expected_result") or "形成清晰结论"
-    intent_card = payload.get("intent_card") or {}
-    core_goal = intent_card.get("coreGoal") or intent_card.get("core_goal") or "未提供"
+    user_demand = _safe_text(payload.get("initial_demand")) or _safe_text(payload.get("user_message")) or "未提供"
     return f"""你是圆桌讨论的书记员。
 请基于当前讨论内容提炼当前已经形成的共识、尚未解决的争议，以及最值得继续追问的问题。
 
-【核心目标】{core_goal}
+【原始需求】{user_demand}
 【期望结果】{expected_result}
 【讨论内容】
 {transcript}
@@ -947,10 +955,7 @@ def _build_roundtable_system_prompt(
     stage: str,
 ) -> str:
     prompt_templates = payload.get("prompt_templates") or {}
-    intent_card = payload.get("intent_card") or {}
-    core_goal = intent_card.get("coreGoal") or intent_card.get("core_goal") or "未提供"
-    constraints = intent_card.get("constraints") or ""
-    pain_points = intent_card.get("painPoints") or intent_card.get("pain_points") or ""
+    user_demand = _safe_text(payload.get("initial_demand")) or _safe_text(payload.get("user_message")) or "未提供"
     expected_result = payload.get("expected_result") or ""
     role_name = role.get("name") or "角色"
     role_stance = role.get("stance") or "中立"
@@ -959,9 +964,7 @@ def _build_roundtable_system_prompt(
         prompt_templates.get("prompt_base")
         or "你是圆桌创意中的一个角色，请保持高信噪比，避免客套话、重复和盲目附和。",
         f"你的身份：{role_name}（立场：{role_stance}）。",
-        f"用户意图锚点：{core_goal}。",
-        f"限制条件：{constraints or '未提供'}。",
-        f"待解决痛点：{pain_points or '未提供'}。",
+        f"用户原始需求：{user_demand}。",
         f"期望结果：{expected_result or '未提供'}。",
         "请优先指出有价值的新信息、风险和分歧，不要复述别人已经说过的话。",
         "如果你同意某个观点，必须补充证据、边界或执行条件，禁止空泛附和。",
@@ -1029,13 +1032,9 @@ def _build_roundtable_user_prompt(
 ) -> str:
     role_name = role.get("name") or "角色"
     role_stance = role.get("stance") or "中立"
-    core_goal = (
-        (payload.get("intent_card") or {}).get("coreGoal")
-        or (payload.get("intent_card") or {}).get("core_goal")
-        or "未指定目标"
-    )
+    user_demand = _safe_text(payload.get("initial_demand")) or _safe_text(payload.get("user_message")) or "未指定需求"
     return f"""【讨论阶段】{stage}
-【核心目标】{core_goal}
+【原始需求】{user_demand}
 【角色身份】{role_name}（{role_stance}）
 【讨论摘要】
 {memory_summary or '暂无摘要'}
@@ -1186,10 +1185,11 @@ async def _evaluate_roundtable(
 ) -> Dict[str, Any]:
     transcript = _build_recent_transcript(messages, memory_summary=memory_summary, max_messages=10, max_chars=3600)
     prompt_payload = {
+        "initial_demand": payload.get("initial_demand") or "",
+        "user_message": payload.get("user_message") or "",
         "expected_result": payload.get("expected_result") or "",
         "transcript": transcript,
         "current_round": current_round,
-        "intent_card": payload.get("intent_card") or {},
     }
 
     async def get_progress() -> Dict[str, Any]:
@@ -1264,7 +1264,9 @@ async def _generate_role_reply_stream(
         prompt = _build_roundtable_user_prompt(payload, role, stage, user_message, memory_summary)
         system_prompt = _build_roundtable_system_prompt(payload, role, stage)
         
-        last_update_time = time.time()
+        last_snapshot_time = time.time()
+        last_delta_time = time.time()
+        delta_buffer = ""
         
         async for chunk in _call_llm_stream_with_settings(llm_settings, prompt, system_prompt):
             # 检查取消信号
@@ -1273,10 +1275,21 @@ async def _generate_role_reply_stream(
                 break
 
             content += chunk
-            
-            # Throttle updates to align with SSE poll interval (0.35s)
+            delta_buffer += chunk
+
             now = time.time()
-            if now - last_update_time > 0.3:
+            if delta_buffer and now - last_delta_time >= 0.04:
+                await _publish_task_stream_payload(
+                    task_id,
+                    {
+                        "event": "message.delta",
+                        "delta": {"msg_id": msg_id, "text": delta_buffer},
+                    },
+                )
+                delta_buffer = ""
+                last_delta_time = now
+            
+            if now - last_snapshot_time > 1.2:
                 current_messages[msg_idx]["content"] = content
                 current_messages[msg_idx]["streaming"] = True
                 await _set_task_state(
@@ -1287,7 +1300,7 @@ async def _generate_role_reply_stream(
                     },
                     persist=False,
                 )
-                last_update_time = now
+                last_snapshot_time = now
                 
     except Exception as exc:
         if not content:
@@ -1296,6 +1309,14 @@ async def _generate_role_reply_stream(
             content += f"\n> (生成中断：{exc})"
 
     normalized_content = content.strip()
+    if delta_buffer:
+        await _publish_task_stream_payload(
+            task_id,
+            {
+                "event": "message.delta",
+                "delta": {"msg_id": msg_id, "text": delta_buffer},
+            },
+        )
 
     # 立即将已完成的流式消息落库并推送给前端，不等待摘要生成
     # 摘要由调用方通过 asyncio.create_task 并发生成，不阻塞下一个角色的流式输出
@@ -2011,7 +2032,7 @@ async def _create_task(
             "transcript": request.transcript,
             "expected_result": request.expected_result,
             "current_round": request.current_round,
-            "intent_card": request.intent_card or {},
+            "initial_demand": request.initial_demand or "",
             "trigger": request.trigger,
         },
         db,

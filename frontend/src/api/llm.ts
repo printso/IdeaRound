@@ -17,6 +17,7 @@ export interface LLMConfig {
   context_length?: number;
   frequency_penalty?: number;
   presence_penalty?: number;
+  auxiliary_model_id?: number;
   created_at: string;
   updated_at?: string;
 }
@@ -35,6 +36,7 @@ export interface LLMConfigCreate {
   context_length?: number;
   frequency_penalty?: number;
   presence_penalty?: number;
+  auxiliary_model_id?: number;
 }
 
 export interface LLMConfigUpdate {

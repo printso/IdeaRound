@@ -1,10 +1,9 @@
 // Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
-import { Avatar, Button, Card, Col, Divider, Empty, Form, Input, InputNumber, List, Row, Select, Space, Switch, Typography } from 'antd';
+import { Avatar, Button, Card, Col, Divider, Empty, Input, InputNumber, List, Row, Select, Space, Switch, Typography } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import MaterialUploader from '../../components/MaterialUploader';
 import MaterialIntentSynthesis from '../../components/MaterialIntentSynthesis';
-import type { IntentCardState } from '../../hooks/useWorkspace';
 import type { LLMConfig } from '../../api/llm';
 import type { MaterialInfo } from '../../api/material';
 
@@ -13,7 +12,6 @@ const { Text } = Typography;
 export interface ExpertModeConfigProps {
   initialDemand: string;
   isExpertMode: boolean;
-  scenarioTemplates: any[];
   roomId: string;
   preUploadRoomId: string;
   uploadedMaterials: MaterialInfo[];
@@ -28,14 +26,11 @@ export interface ExpertModeConfigProps {
   expectedResult: string;
   generatingExpectedResult: boolean;
   maxDialogueRounds: number;
-  intentCard: IntentCardState;
-  form: any;
   onInitialDemandChange: (val: string) => void;
   onMaterialsAnalyzed: (mats: MaterialInfo[]) => void;
   onIntentSynthesized: (result: any) => void;
   onStartIntentProbing: () => void;
   onIsExpertModeChange: (val: boolean) => void;
-  onSelectScenarioTemplate: (id: number) => void;
   onResetAnalysisState: () => void;
   onApplyProbeAnswer: (id: string, label: string) => void;
   onCustomProbeOptionsChange: (opts: Record<string, string>) => void;
@@ -44,14 +39,12 @@ export interface ExpertModeConfigProps {
   onExpectedResultChange: (val: string) => void;
   onGenerateExpectedResult: () => void;
   onMaxDialogueRoundsChange: (val: number) => void;
-  onIntentCardChange: (val: IntentCardState) => void;
   onConfirmIntent: () => void;
 }
 
 export function ExpertModeConfig({
   initialDemand,
   isExpertMode,
-  scenarioTemplates,
   roomId,
   preUploadRoomId,
   uploadedMaterials,
@@ -66,14 +59,11 @@ export function ExpertModeConfig({
   expectedResult,
   generatingExpectedResult,
   maxDialogueRounds,
-  intentCard,
-  form,
   onInitialDemandChange,
   onMaterialsAnalyzed,
   onIntentSynthesized,
   onStartIntentProbing,
   onIsExpertModeChange,
-  onSelectScenarioTemplate,
   onResetAnalysisState,
   onApplyProbeAnswer,
   onCustomProbeOptionsChange,
@@ -82,7 +72,6 @@ export function ExpertModeConfig({
   onExpectedResultChange,
   onGenerateExpectedResult,
   onMaxDialogueRoundsChange,
-  onIntentCardChange,
   onConfirmIntent,
 }: ExpertModeConfigProps) {
   return (
@@ -136,29 +125,10 @@ export function ExpertModeConfig({
                   </Button>
                   <Space>
                     <Switch checked={isExpertMode} onChange={onIsExpertModeChange} />
-                    <Text>高级模式 (自定义探针、角色与结构化意图)</Text>
+                    <Text>高级模式（多轮澄清 + 可选高级配置）</Text>
                   </Space>
                 </Space>
               </Space>
-
-              {/* 场景模板快捷入口 */}
-              {scenarioTemplates.length > 0 && (
-                <div style={{ marginTop: 16, padding: '16px', background: '#fafafa', borderRadius: 8 }}>
-                  <Text strong style={{ display: 'block', marginBottom: 12 }}>或使用场景模板一键上桌：</Text>
-                  <Space wrap>
-                    {scenarioTemplates.filter(t => t.is_active).map(template => (
-                      <Button 
-                        key={template.id} 
-                        onClick={() => onSelectScenarioTemplate(template.id)}
-                        disabled={!initialDemand.trim() && uploadedMaterials.length === 0}
-                        title={(!initialDemand.trim() && uploadedMaterials.length === 0) ? "请先输入需求或上传资料" : template.description}
-                      >
-                        {template.name}
-                      </Button>
-                    ))}
-                  </Space>
-                </div>
-              )}
             </Space>
 
             <>
@@ -232,7 +202,7 @@ export function ExpertModeConfig({
         </Card>
       </Col>
       <Col xs={24} xl={10}>
-        <Card title="高级配置与结构化需求" style={{ borderRadius: 8 }}>
+        <Card title="高级配置" style={{ borderRadius: 8 }}>
           <div style={{ maxHeight: 'calc(100dvh - 64px - 140px)', overflowY: 'auto', paddingRight: 8 }}>
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
               <Card type="inner" title="全局配置" style={{ borderRadius: 8 }}>
@@ -280,34 +250,10 @@ export function ExpertModeConfig({
                       <InputNumber min={1} max={30} value={maxDialogueRounds} onChange={(v) => onMaxDialogueRoundsChange(Number(v || 6))} />
                     </Space>
                   </Space>
+                  <Button type="primary" onClick={onConfirmIntent} loading={generatingExpectedResult} block>
+                    确认并进入角色矩阵
+                  </Button>
                 </Space>
-              </Card>
-              <Card type="inner" title="结构化需求卡片（可编辑）" style={{ borderRadius: 8 }}>
-                <Form
-                  form={form}
-                  layout="vertical"
-                  initialValues={intentCard}
-                  onValuesChange={(_, values) => onIntentCardChange(values as IntentCardState)}
-                >
-                  <Form.Item
-                    name="coreGoal"
-                    label="核心目标"
-                    rules={[{ required: true, message: '请填写核心目标' }]}
-                  >
-                    <Input placeholder="例：在两周内验证产品方向并形成可执行方案" />
-                  </Form.Item>
-                  <Form.Item name="constraints" label="限制条件">
-                    <Input placeholder="例：预算有限；人手少；需合规" />
-                  </Form.Item>
-                  <Form.Item name="painPoints" label="待解决痛点">
-                    <Input placeholder="例：方向跑偏；落地成本高；结果不可量化" />
-                  </Form.Item>
-                  <Space>
-                    <Button type="primary" onClick={onConfirmIntent} loading={generatingExpectedResult}>
-                      确认意图并进入角色矩阵
-                    </Button>
-                  </Space>
-                </Form>
               </Card>
             </Space>
           </div>

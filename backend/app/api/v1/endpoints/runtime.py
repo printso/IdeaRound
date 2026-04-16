@@ -153,7 +153,7 @@ async def start_roundtable_run(
             "auto_continue": request.auto_continue,
             "max_dialogue_rounds": request.max_dialogue_rounds,
             "auto_round_count": request.auto_round_count,
-            "intent_card": request.intent_card or {},
+            "initial_demand": request.initial_demand or "",
             "expected_result": request.expected_result,
             "system_prompt": request.system_prompt,
             "prompt_templates": request.prompt_templates or {},

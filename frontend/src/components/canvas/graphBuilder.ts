@@ -40,10 +40,10 @@ export const buildNode = (kind: NodeKind, position: { x: number; y: number }, se
   },
 });
 
-export const buildStarterNodes = (intentAnchor: string): Node<CanvasNodeData>[] => {
-  const anchor = (intentAnchor ?? '').trim() || '目标待补充';
+export const buildStarterNodes = (topic: string): Node<CanvasNodeData>[] => {
+  const anchor = (topic ?? '').trim() || '议题待补充';
   return [
-    buildNode('anchor', { x: 280, y: 30 }, { title: '核心意图锚点', content: anchor, status: 'done' }),
+    buildNode('anchor', { x: 280, y: 30 }, { title: '核心议题', content: anchor, status: 'done' }),
     buildNode('expert', { x: 30, y: 180 }, { title: '专家观点区域', content: '等待圆桌讨论生成专家观点节点', status: 'todo' }),
     buildNode('relation', { x: 280, y: 180 }, { title: '观点关系网络', content: '显示观点之间的反驳、补充、派生关系', status: 'todo' }),
     buildNode('milestone', { x: 280, y: 350 }, { title: '决策收敛', content: '已达成共识的结论', decision: 'pending', status: 'todo' }),
@@ -52,7 +52,7 @@ export const buildStarterNodes = (intentAnchor: string): Node<CanvasNodeData>[] 
 
 export const createInitialSnapshot = (
   storageKey: string,
-  intentAnchor: string,
+  topic: string,
   initialSnapshotData?: Record<string, unknown> | null,
 ): CanvasSnapshot => {
   if (initialSnapshotData?.nodes && initialSnapshotData?.edges && initialSnapshotData?.viewport) {
@@ -67,7 +67,7 @@ export const createInitialSnapshot = (
     try {
       return JSON.parse(saved) as CanvasSnapshot;
     } catch {
-      const starterNodes = buildStarterNodes(intentAnchor);
+      const starterNodes = buildStarterNodes(topic);
       return {
         nodes: starterNodes,
         edges: [],
@@ -76,7 +76,7 @@ export const createInitialSnapshot = (
       };
     }
   }
-  const starterNodes = buildStarterNodes(intentAnchor);
+  const starterNodes = buildStarterNodes(topic);
   const starterSnapshot: CanvasSnapshot = {
     nodes: starterNodes,
     edges: [],
@@ -88,20 +88,20 @@ export const createInitialSnapshot = (
 };
 
 export const buildStructuredGraph = (
-  intentAnchor: string,
+  topic: string,
   messages: MessageItem[],
   roles: RoleMember[],
   expectedResult: string,
   canvasConsensus: string[],
   roundtableStage: 'brief' | 'final',
 ): { nodes: Node<CanvasNodeData>[]; edges: Edge<CanvasEdgeData>[] } => {
-  const anchorText = (intentAnchor ?? '').trim() || '目标待补充';
+  const anchorText = (topic ?? '').trim() || '议题待补充';
   const anchorNode: Node<CanvasNodeData> = {
     id: 'anchor_main',
     type: 'anchor',
     position: { x: 460, y: 30 },
     data: {
-      title: '核心意图锚点',
+      title: '核心议题',
       content: anchorText,
       owner: '用户',
       status: 'done',
@@ -167,7 +167,7 @@ export const buildStructuredGraph = (
 
   const negativeCount = expertNodes.filter((node) => node.data.expertStance === 'negative').length;
   const deliverableFindings = extractDeliverableFindings(
-    intentAnchor,
+    topic,
     expectedResult,
     messages,
     canvasConsensus,

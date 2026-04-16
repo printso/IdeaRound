@@ -13,8 +13,30 @@ const isFormData = (body: BodyInit | null | undefined): body is FormData =>
 const readErrorMessage = async (response: Response): Promise<string> => {
   const fallback = `请求失败: ${response.status}`;
   try {
-    const payload = (await response.json()) as { detail?: string; message?: string };
-    return payload.detail || payload.message || fallback;
+    const payload = (await response.json()) as { detail?: unknown; message?: unknown };
+    if (typeof payload.detail === 'string' && payload.detail.trim()) {
+      return payload.detail;
+    }
+    if (typeof payload.message === 'string' && payload.message.trim()) {
+      return payload.message;
+    }
+    if (Array.isArray(payload.detail)) {
+      const summarized = payload.detail
+        .map((item) => {
+          if (!item || typeof item !== 'object') {
+            return String(item);
+          }
+          const loc = Array.isArray((item as any).loc) ? (item as any).loc.join('.') : '';
+          const msg = (item as any).msg ? String((item as any).msg) : '';
+          return [loc, msg].filter(Boolean).join(': ');
+        })
+        .filter(Boolean)
+        .join('；');
+      if (summarized) {
+        return summarized;
+      }
+    }
+    return fallback;
   } catch {
     return fallback;
   }

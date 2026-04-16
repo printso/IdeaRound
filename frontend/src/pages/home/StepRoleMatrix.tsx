@@ -1,14 +1,14 @@
 // Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
 import { AppstoreAddOutlined, PlusOutlined } from '@ant-design/icons';
 import { Button, Card, Col, Divider, Grid, InputNumber, Row, Space, Switch, Tag, Typography } from 'antd';
-import type { IntentCardState, RoleMember } from '../../hooks/useWorkspace';
+import type { RoleMember } from '../../hooks/useWorkspace';
 
 const { Paragraph, Text } = Typography;
 
 export interface StepRoleMatrixProps {
   roles: RoleMember[];
   isReGeneratingRoles: boolean;
-  intentCard: IntentCardState;
+  initialDemand: string;
   intentReady: boolean;
   expectedResult: string;
   maxDialogueRounds: number;
@@ -28,7 +28,7 @@ export interface StepRoleMatrixProps {
 export function StepRoleMatrix({
   roles,
   isReGeneratingRoles,
-  intentCard,
+  initialDemand,
   intentReady,
   expectedResult,
   maxDialogueRounds,
@@ -135,8 +135,10 @@ export function StepRoleMatrix({
         <Card title="确认与启动" style={{ borderRadius: 8 }}>
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <Card size="small">
-              <Text strong>意图锚点</Text>
-              <Paragraph style={{ marginBottom: 0 }}>{intentCard.coreGoal || '-'}</Paragraph>
+              <Text strong>核心议题</Text>
+              <Paragraph style={{ marginBottom: 0 }} ellipsis={{ rows: 2, expandable: true }}>
+                {initialDemand.trim() || '-'}
+              </Paragraph>
             </Card>
             <Card size="small">
               <Text strong>期望结果</Text>

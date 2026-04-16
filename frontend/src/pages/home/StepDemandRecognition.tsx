@@ -3,16 +3,13 @@ import { Button, Card, Divider, Grid, Input, Space, Switch, Typography } from 'a
 import MaterialUploader from '../../components/MaterialUploader';
 import MaterialIntentSynthesis from '../../components/MaterialIntentSynthesis';
 import type { MaterialInfo } from '../../api/material';
-import type { IntentCardState } from '../../hooks/useWorkspace';
 
 const { Text } = Typography;
 
 export interface StepDemandRecognitionProps {
   initialDemand: string;
   uploadedMaterials: MaterialInfo[];
-  intentCard: IntentCardState;
   isExpertMode: boolean;
-  scenarioTemplates: any[];
   roomId: string;
   preUploadRoomId: string;
   onInitialDemandChange: (val: string) => void;
@@ -20,15 +17,12 @@ export interface StepDemandRecognitionProps {
   onIntentSynthesized: (result: any) => void;
   onStartIntentProbing: () => void;
   onIsExpertModeChange: (val: boolean) => void;
-  onSelectScenarioTemplate: (id: number) => void;
 }
 
 export function StepDemandRecognition({
   initialDemand,
   uploadedMaterials,
-  // intentCard is not used here but passed for consistency
   isExpertMode,
-  scenarioTemplates,
   roomId,
   preUploadRoomId,
   onInitialDemandChange,
@@ -36,7 +30,6 @@ export function StepDemandRecognition({
   onIntentSynthesized,
   onStartIntentProbing,
   onIsExpertModeChange,
-  onSelectScenarioTemplate,
 }: StepDemandRecognitionProps) {
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
@@ -93,29 +86,11 @@ export function StepDemandRecognition({
                   <Space>
                     <Switch checked={isExpertMode} onChange={onIsExpertModeChange} />
                     <Text style={{ fontSize: isMobile ? 12 : 14 }}>
-                      {isMobile ? '高级模式' : '高级模式 (自定义探针、角色与结构化意图)'}
+                      {isMobile ? '高级模式' : '高级模式（多轮澄清 + 高级配置）'}
                     </Text>
                   </Space>
                 </div>
               </Space>
-
-              {scenarioTemplates.length > 0 && (
-                <div style={{ marginTop: 16, padding: '16px', background: '#fafafa', borderRadius: 8 }}>
-                  <Text strong style={{ display: 'block', marginBottom: 12 }}>或使用场景模板一键上桌：</Text>
-                  <Space wrap>
-                    {scenarioTemplates.filter((t) => t.is_active).map((template) => (
-                      <Button
-                        key={template.id}
-                        onClick={() => onSelectScenarioTemplate(template.id)}
-                        disabled={!initialDemand.trim() && uploadedMaterials.length === 0}
-                        title={(!initialDemand.trim() && uploadedMaterials.length === 0) ? '请先输入需求或上传资料' : template.description}
-                      >
-                        {template.name}
-                      </Button>
-                    ))}
-                  </Space>
-                </div>
-              )}
             </Space>
         </div>
       </Card>

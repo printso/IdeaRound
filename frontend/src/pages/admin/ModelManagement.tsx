@@ -288,7 +288,7 @@ const ModelManagement: React.FC = () => {
           <Form.Item name="temperature" label="默认温度" initialValue={0.7}>
             <InputNumber style={{ width: '100%' }} step={0.1} min={0} max={2} />
           </Form.Item>
-          <Divider orientation="left" style={{ fontSize: 13, margin: '8px 0 16px' }}>上下文参数</Divider>
+          <Divider titlePlacement="left" style={{ fontSize: 13, margin: '8px 0 16px' }}>上下文参数</Divider>
           <Form.Item name="context_length" label="上下文长度" tooltip="模型支持的最大上下文 token 数，用于上下文溢出时的截断策略参考">
             <InputNumber style={{ width: '100%' }} min={1} step={1024} placeholder="例如：128000" />
           </Form.Item>
@@ -304,7 +304,7 @@ const ModelManagement: React.FC = () => {
           <Form.Item name="presence_penalty" label="存在惩罚" tooltip="新 topic 的鼓励系数，值越大越倾向谈论新话题">
             <InputNumber style={{ width: '100%' }} step={0.1} min={-2} max={2} placeholder="-2 ~ 2" />
           </Form.Item>
-          <Divider orientation="left" style={{ fontSize: 13, margin: '8px 0 16px' }}>状态</Divider>
+          <Divider titlePlacement="left" style={{ fontSize: 13, margin: '8px 0 16px' }}>状态</Divider>
           <Form.Item name="is_active" label="是否启用" valuePropName="checked" initialValue={true}>
             <Switch />
           </Form.Item>

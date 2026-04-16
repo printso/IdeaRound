@@ -42,7 +42,7 @@ const { Text, Title } = Typography;
 
 const RoundtableCanvas = ({
   roomId,
-  intentAnchor,
+  topic,
   messages = [],
   roles = [],
   expectedResult = '',
@@ -53,7 +53,7 @@ const RoundtableCanvas = ({
   onSnapshotChange,
 }: RoundtableCanvasProps) => {
   const storageKey = useMemo(() => `idearound_roundtable_canvas_${roomId || 'default'}`, [roomId]);
-  const [initialSnapshot] = useState<CanvasSnapshot>(() => createInitialSnapshot(storageKey, intentAnchor, initialSnapshotData));
+  const [initialSnapshot] = useState<CanvasSnapshot>(() => createInitialSnapshot(storageKey, topic, initialSnapshotData));
   const clientIdRef = useRef(createId('client'));
   const channelRef = useRef<BroadcastChannel | null>(null);
   const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -185,7 +185,7 @@ const RoundtableCanvas = ({
 
   const applyStructuredLayout = useCallback(() => {
     const { nodes: structuredNodes, edges: structuredEdges } = buildStructuredGraph(
-      intentAnchor,
+      topic,
       messages,
       roles,
       expectedResult,
@@ -194,7 +194,7 @@ const RoundtableCanvas = ({
     );
     commitGraph(structuredNodes, structuredEdges, { recordHistory: false, broadcast: true, resetFuture: false });
     reactFlowRef.current?.fitView({ padding: 0.16, duration: 200 });
-  }, [canvasConsensus, commitGraph, expectedResult, intentAnchor, messages, roles, roundtableStage]);
+  }, [canvasConsensus, commitGraph, expectedResult, messages, roles, roundtableStage, topic]);
 
   useEffect(() => {
     applyStructuredLayout();

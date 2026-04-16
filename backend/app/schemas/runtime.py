@@ -10,7 +10,7 @@ class RuntimeTaskCreateRequest(BaseModel):
     transcript: str = Field(default="", max_length=50000)
     expected_result: str = Field(default="", max_length=2000)
     current_round: int = Field(default=0, ge=0, le=100)
-    intent_card: Optional[Dict[str, str]] = None
+    initial_demand: Optional[str] = Field(default=None, max_length=5000)
     trigger: Optional[str] = Field(default=None, max_length=50)
 
 
@@ -45,7 +45,7 @@ class RuntimeRoundtableRunRequest(BaseModel):
     auto_continue: bool = True
     max_dialogue_rounds: int = Field(default=6, ge=1, le=30)
     auto_round_count: int = Field(default=0, ge=0, le=100)
-    intent_card: Optional[Dict[str, str]] = None
+    initial_demand: Optional[str] = Field(default=None, max_length=5000)
     expected_result: str = Field(default="", max_length=2000)
     system_prompt: str = Field(default="", max_length=5000)
     prompt_templates: Optional[Dict[str, str]] = None

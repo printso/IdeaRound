@@ -18,12 +18,6 @@ export type RoundtableRoom = {
   createdAt: string;
 };
 
-export type IntentCardState = {
-  coreGoal: string;
-  constraints: string;
-  painPoints: string;
-};
-
 export type RoleMember = {
   id: string;
   name: string;
@@ -119,7 +113,6 @@ export function useWorkspace() {
   const [backendWorkspaceIds, setBackendWorkspaceIds] = useState<Set<string>>(new Set());
 
   const [initialDemand, setInitialDemand] = useState('');
-  const [intentCard, setIntentCard] = useState<IntentCardState>({ coreGoal: '', constraints: '', painPoints: '' });
   const [intentReady, setIntentReady] = useState(false);
 
   const [roles, setRoles] = useState<RoleMember[]>([]);
@@ -157,7 +150,6 @@ export function useWorkspace() {
   const loadWorkspaceData = useCallback((data: WorkspaceData) => {
     setStep((data.step as StepKey) || 'roundtable');
     setInitialDemand(data.initial_demand || '');
-    if (data.intent_card) setIntentCard(data.intent_card);
     setIntentReady(!!data.intent_ready);
     
     if (data.roles) {
@@ -248,7 +240,6 @@ export function useWorkspace() {
         room_name: roundtableRooms.find(r => r.id === roomId)?.name || `圆桌空间-${new Date().toLocaleString()}`,
         step,
         initial_demand: initialDemand,
-        intent_card: intentCard,
         intent_ready: intentReady,
         roles: roles.map(role => ({
           id: role.id,
@@ -317,7 +308,7 @@ export function useWorkspace() {
       console.error('保存工作台到后端失败:', error);
     }
   }, [
-    isAuthenticated, roomId, roundtableRooms, step, initialDemand, intentCard, intentReady,
+    isAuthenticated, roomId, roundtableRooms, step, initialDemand, intentReady,
     roles, rolesReady, roomReady, systemPrompt, messages, canvasConsensus, canvasDisputes,
     canvasUpdatedAt, roundtableStage, selectedModelId, expectedResult, maxDialogueRounds,
     autoRoundCount, judgeState, consensusBoard, canvasSnapshot, backendWorkspaceIds
@@ -340,7 +331,6 @@ export function useWorkspace() {
         setRoomId('');
         setStep('roundtable');
         setInitialDemand('');
-        setIntentCard({ coreGoal: '', constraints: '', painPoints: '' });
         setIntentReady(false);
         setRoles([]);
         setRolesReady(false);
@@ -363,7 +353,6 @@ export function useWorkspace() {
       roomReady, setRoomReady,
       roundtableRooms, setRoundtableRooms,
       initialDemand, setInitialDemand,
-      intentCard, setIntentCard,
       intentReady, setIntentReady,
       roles, setRoles,
       rolesReady, setRolesReady,

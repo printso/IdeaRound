@@ -1,5 +1,5 @@
 // Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
-import { Button, Dropdown, Col, Form, Grid, Input, Layout, List, Modal, Row, Space, Tag, Typography, message } from 'antd';
+import { Button, Dropdown, Col, Grid, Input, Layout, List, Modal, Row, Space, Tag, Typography, message } from 'antd';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -19,7 +19,7 @@ import {
 } from '../api/runtime';
 import { useAuth } from '../contexts/AuthContext';
 import { useWorkspace } from '../hooks/useWorkspace';
-import type { StepKey, RoundtableRoom, IntentCardState, RoleMember, RoundtableStage, JudgeState, BoardDispute } from '../hooks/useWorkspace';
+import type { StepKey, RoundtableRoom, RoleMember, RoundtableStage, JudgeState, BoardDispute } from '../hooks/useWorkspace';
 import { normalizeRoundtableMessage } from '../hooks/useWorkspace';
 import type { WorkspaceData } from '../api/workspace';
 import { createWorkspace, listWorkspaces, getWorkspace, updateWorkspace, deleteWorkspace } from '../api/workspace';
@@ -44,9 +44,6 @@ type ProbeTurn = {
   content: string;
 };
 
-type ReplyViewMode = 'compact' | 'detailed';
-
-const getReplyViewModeStorageKey = (userId?: number) => `idearound_reply_view_mode_${userId ?? 'guest'}`;
 
 
 
@@ -62,7 +59,7 @@ import { ExpertModeConfig } from './home/ExpertModeConfig';
 import './Home.css';
 
 function Home() {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated } = useAuth();
   const { state: workspaceState, actions: _workspaceActions } = useWorkspace();
   const {
     step, setStep,
@@ -70,7 +67,6 @@ function Home() {
     roomReady, setRoomReady,
     roundtableRooms, setRoundtableRooms,
     initialDemand, setInitialDemand,
-    intentCard, setIntentCard,
     intentReady, setIntentReady,
     roles, setRoles,
     rolesReady, setRolesReady,
@@ -97,22 +93,19 @@ function Home() {
   const [probeTurns, setProbeTurns] = useState<ProbeTurn[]>([]);
   
   const [roleTemplates, setRoleTemplates] = useState<{id: number; name: string; stance: string; description?: string; soul_config?: string; is_active?: boolean; is_default?: boolean; skill_tags?: string[]; category?: string}[]>([]);
-  const [scenarioTemplates, setScenarioTemplates] = useState<{id: number; name: string; description?: string; preset_roles: number[]; system_prompt_override?: string; is_active: boolean}[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<Record<string, string>>({});
   const [moderatorSummaryMode, setModeratorSummaryMode] = useState<'disabled' | 'manual' | 'per_round' | 'auto'>('auto');
   
   const [autoBrainstorm, setAutoBrainstorm] = useState(true);
   const [userPrompt, setUserPrompt] = useState('');
   const [sending, setSending] = useState(false);
-  const [replyViewMode, setReplyViewMode] = useState<ReplyViewMode>(() => {
-    try {
-      const cachedMode = localStorage.getItem(getReplyViewModeStorageKey(user?.id));
-      return cachedMode === 'detailed' ? 'detailed' : 'compact';
-    } catch {
-      return 'compact';
-    }
-  });
-  const [expandedMessageIds, setExpandedMessageIds] = useState<string[]>([]);
+  const [roundtableNotice, setRoundtableNotice] = useState<{
+    type: 'info' | 'warning' | 'error';
+    message: string;
+    actionText?: string;
+    onAction?: () => void;
+  } | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
   const [backendWorkspaceIds, setBackendWorkspaceIds] = useState<Set<string>>(new Set());
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [pendingRoundtableRun, setPendingRoundtableRun] = useState<{ roomId: string; text: string; stage: RoundtableStage; trigger?: 'user' | 'host'; systemPrompt?: string } | null>(null);
@@ -143,8 +136,7 @@ function Home() {
   const hasLoadedInitialDataRef = useRef(false);
   const backendWorkspaceIdsRef = useRef<Set<string>>(new Set());  // 避免闭包问题
   const pendingSummaryIdsRef = useRef<Set<string>>(new Set());
-  const trackedReplyModeKeyRef = useRef<string>('');
-  const [form] = Form.useForm();
+  const intentAnalysisRunIdRef = useRef<number>(0);
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
   const [siderDrawerOpen, setSiderDrawerOpen] = useState(false);
@@ -152,15 +144,15 @@ function Home() {
   // 生成基于意图洞察的摘要标题
   const generateIntentSummaryTitle = async (intentData: {
     initialDemand: string;
-    intentCard: IntentCardState;
     probeTurns: ProbeTurn[];
+    expectedResult?: string;
   }, creationTime?: Date): Promise<string> => {
     try {
-      const { initialDemand, intentCard, probeTurns } = intentData;
+      const { initialDemand, probeTurns, expectedResult } = intentData;
       const timeToUse = creationTime || new Date();
       
       // 如果没有选择模型或没有数据，返回默认标题
-      if (!selectedModelId || (!initialDemand && !intentCard.coreGoal)) {
+      if (!selectedModelId || !initialDemand.trim()) {
         return `圆桌空间_${timeToUse.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
       }
       
@@ -168,9 +160,7 @@ function Home() {
       const prompt = `基于以下意图洞察信息，生成一个20字以内的中文摘要标题。要求：简洁明了，概括核心意图，不包含技术术语，适合作为圆桌空间名称。
       
 原始需求：${initialDemand || '无'}
-核心目标：${intentCard.coreGoal || '无'}
-限制条件：${intentCard.constraints || '无'}
-关键痛点：${intentCard.painPoints || '无'}
+期望结果：${expectedResult || '无'}
 澄清对话：${probeTurns.map(turn => `${turn.role}: ${turn.content}`).join(' | ') || '无'}
 
 请直接输出摘要标题，不要添加任何解释。`;
@@ -232,11 +222,7 @@ function Home() {
       
       // 如果生成失败或为空，使用默认标题
       if (!cleanSummary) {
-        const defaultTitle = intentCard.coreGoal 
-          ? `${intentCard.coreGoal.substring(0, 15)}`
-          : initialDemand 
-            ? `${initialDemand.substring(0, 15)}`
-            : '圆桌空间';
+        const defaultTitle = initialDemand ? `${initialDemand.substring(0, 15)}` : '圆桌空间';
         return `${defaultTitle}_${timeToUse.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
       }
       
@@ -244,11 +230,7 @@ function Home() {
     } catch (error) {
       console.error('生成意图摘要标题失败:', error);
       // 生成备选标题
-      const fallbackTitle = intentData.intentCard.coreGoal 
-        ? `${intentData.intentCard.coreGoal.substring(0, 15)}`
-        : intentData.initialDemand 
-          ? `${intentData.initialDemand.substring(0, 15)}`
-          : '圆桌空间';
+      const fallbackTitle = intentData.initialDemand ? `${intentData.initialDemand.substring(0, 15)}` : '圆桌空间';
       const timeToUse = creationTime || new Date();
       return `${fallbackTitle}_${timeToUse.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
     }
@@ -354,13 +336,14 @@ function Home() {
     return null;
   };
 
-  const generateExpectedResultByIntent = async (intentData: IntentCardState) => {
-    const fallback = `围绕「${intentData.coreGoal || '当前需求'}」形成可执行方案，并明确关键路径、风险对策与可验证指标。`;
+  const generateExpectedResultByDemand = async (demandText: string) => {
+    const demand = demandText.trim() || '当前需求';
+    const fallback = `围绕「${demand.slice(0, 30)}」形成可执行方案，并明确关键路径、风险对策与可验证指标。`;
     if (!selectedModelId) {
       return fallback;
     }
     const prompt = `基于意图洞察生成"期望结果"，不超过80字，不用标题和列表。
-目标:${intentData.coreGoal || '无'} 限制:${intentData.constraints || '无'} 痛点:${intentData.painPoints || '无'}`;
+原始需求:${demand.slice(0, 1500) || '无'}`;
     try {
       const text = await syncChatByLLMConfig(selectedModelId, {
         message: prompt,
@@ -500,17 +483,26 @@ function Home() {
 
     const nextMessages = Array.isArray(payload.messages) ? payload.messages : [];
     if (nextMessages.length > 0) {
-      setMessages(() => {
-        // We want to avoid replacing the user's immediate input with an older snapshot
-        // when the stream just starts. But the backend's stream is the source of truth
-        // for agent messages.
+      setMessages((prev) => {
         const normalized = nextMessages.map((msg) => normalizeRoundtableMessage(msg as Record<string, unknown>));
-        
-        // Let's do a simple optimization: if the new messages are exactly the same 
-        // length as prev, and nothing is streaming, we might not need to update.
-        // But for safety and simplicity, we just take the backend's state as it's
-        // continually streaming updates.
-        return normalized;
+        if (prev.length === 0) {
+          return normalized;
+        }
+        const prevMap = new Map(prev.map((item) => [item.id, item]));
+        return normalized.map((item) => {
+          const prevItem = prevMap.get(item.id);
+          if (!prevItem) {
+            return item;
+          }
+          if (item.streaming && prevItem.streaming) {
+            const prevContent = prevItem.content || '';
+            const nextContent = item.content || '';
+            if (prevContent.length > nextContent.length) {
+              return { ...item, content: prevContent };
+            }
+          }
+          return item;
+        });
       });
     }
 
@@ -546,6 +538,20 @@ function Home() {
     await streamRuntimeTask(
       taskId,
       {
+        onDelta: (delta) => {
+          setMessages((prev) =>
+            prev.map((item) => {
+              if (item.id !== delta.msg_id) {
+                return item;
+              }
+              return {
+                ...item,
+                content: `${item.content || ''}${delta.text}`,
+                streaming: true,
+              };
+            }),
+          );
+        },
         onTask: (task, eventName) => {
           if (task.result_payload) {
             applyRoundtableTaskPayload(task.result_payload as Record<string, unknown>);
@@ -553,7 +559,30 @@ function Home() {
 
           if (task.status === 'failed') {
             setSending(false);
-            message.warning(task.error_message || '后台任务执行失败');
+            const raw = String(task.error_message || '').trim();
+            const isContextOverflow = /context|上下文|maximum context|token|长度超限|too long/i.test(raw);
+            const isNetwork = /Connection error|Failed to fetch|NetworkError|timeout|超时/i.test(raw);
+            const userMessage = isContextOverflow
+              ? '内容过长，已达到模型上下文上限。请缩短输入或清空对话后重试。'
+              : isNetwork
+                ? '网络连接异常，生成已中断。请检查网络后重试。'
+                : '生成失败，请稍后重试。';
+            setRoundtableNotice({
+              type: 'error',
+              message: userMessage,
+              actionText: '继续输入',
+              onAction: () => {
+                const textarea = document.querySelector('textarea');
+                (textarea as HTMLTextAreaElement | null)?.focus();
+              },
+            });
+            if (task.room_id) {
+              void trackRuntimeEvent({
+                room_id: task.room_id,
+                event_type: 'roundtable.task_failed',
+                event_payload: { reason: raw || 'unknown' },
+              }).catch(() => undefined);
+            }
           } else if (task.status === 'canceled') {
             setSending(false);
             message.info('圆桌任务已停止');
@@ -580,7 +609,12 @@ function Home() {
           setSending(false);
           roundtableStreamAbortRef.current = null;
           activeRoundtableTaskIdRef.current = null;
-          message.error(error);
+          setRoundtableNotice({
+            type: 'error',
+            message: '连接中断，已停止生成。请检查网络后重试。',
+            actionText: '刷新',
+            onAction: () => window.location.reload(),
+          });
         },
       },
       { signal: controller.signal },
@@ -619,7 +653,6 @@ function Home() {
   const loadWorkspaceData = (data: WorkspaceData) => {
     setStep(data.step as StepKey);
     setInitialDemand(data.initial_demand);
-    setIntentCard(data.intent_card);
     setIntentReady(data.intent_ready);
     setRoles(data.roles.map((role: any) => ({
       id: role.id,
@@ -677,7 +710,6 @@ function Home() {
         room_name: roundtableRooms.find(r => r.id === roomId)?.name || `圆桌空间-${new Date().toLocaleString()}`,
         step,
         initial_demand: initialDemand,
-        intent_card: intentCard,
         intent_ready: intentReady,
         roles: roles.map(role => ({
           id: role.id,
@@ -745,34 +777,7 @@ function Home() {
     } catch (error) {
       console.error('保存工作台到后端失败:', error);
     }
-  }, [autoRoundCount, canvasConsensus, canvasDisputes, canvasSnapshot, canvasUpdatedAt, consensusBoard, expectedResult, initialDemand, intentCard, isAuthenticated, judgeState, maxDialogueRounds, messages, roles, rolesReady, roomId, roomReady, roundtableRooms, roundtableStage, selectedModelId, step, systemPrompt, intentReady]);
-
-  const handleReplyViewModeChange = useCallback((mode: ReplyViewMode) => {
-    setReplyViewMode(mode);
-    setExpandedMessageIds([]);
-    try {
-      localStorage.setItem(getReplyViewModeStorageKey(user?.id), mode);
-    } catch (error) {
-      console.error('缓存回复展示模式失败:', error);
-    }
-    if (user?.id) {
-      void trackRuntimeEvent({
-        room_id: roomId || undefined,
-        user_id: user.id,
-        event_type: 'ui.reply_view_mode.changed',
-        event_payload: {
-          mode,
-          room_ready: roomReady,
-        },
-      }).catch((error) => console.error('记录回复展示切换失败:', error));
-    }
-  }, [roomId, roomReady, user?.id]);
-
-  const toggleExpandedMessage = useCallback((messageId: string) => {
-    setExpandedMessageIds((prev) =>
-      prev.includes(messageId) ? prev.filter((id) => id !== messageId) : [...prev, messageId],
-    );
-  }, []);
+  }, [autoRoundCount, canvasConsensus, canvasDisputes, canvasSnapshot, canvasUpdatedAt, consensusBoard, expectedResult, initialDemand, isAuthenticated, judgeState, maxDialogueRounds, messages, roles, rolesReady, roomId, roomReady, roundtableRooms, roundtableStage, selectedModelId, step, systemPrompt, intentReady]);
 
   const requestMissingSummaries = useCallback(async () => {
     if (!selectedModelId) {
@@ -880,26 +885,6 @@ function Home() {
     }
   };
 
-  const loadScenarioTemplates = async () => {
-    try {
-      const response = await fetch('/api/v1/scenario-templates/');
-      if (response.ok) {
-        const data = await response.json();
-        // 处理可能的分页格式 { total, templates } 或直接数组
-        if (data && Array.isArray(data.templates)) {
-          setScenarioTemplates(data.templates);
-        } else if (Array.isArray(data)) {
-          setScenarioTemplates(data);
-        } else {
-          console.error('场景模板数据格式不正确:', data);
-          setScenarioTemplates([]);
-        }
-      }
-    } catch (e) {
-      console.error('加载场景模板失败:', e);
-    }
-  };
-
   const loadPromptTemplates = async () => {
     try {
       // 从系统提示词管理获取圆桌所需的提示词
@@ -947,7 +932,6 @@ function Home() {
 
     loadModels();
     loadRoleTemplates();
-    loadScenarioTemplates();
     loadPromptTemplates();
     loadModeratorSummaryMode();
     loadWorkspaces(); // 加载工作台列表
@@ -959,7 +943,6 @@ function Home() {
       ? {
           step,
           initialDemand,
-          intentCard,
           intentReady,
           rolesReady,
           roomReady,
@@ -976,7 +959,6 @@ function Home() {
       : {
           step,
           initialDemand,
-          intentCard,
           intentReady,
           roles,
           rolesReady,
@@ -1023,7 +1005,6 @@ function Home() {
   }, [
     step,
     initialDemand,
-    intentCard,
     intentReady,
     roles,
     rolesReady,
@@ -1055,45 +1036,30 @@ function Home() {
   }, [backendWorkspaceIds]);
 
   useEffect(() => {
-    const cachedMode = (() => {
-      try {
-        const value = localStorage.getItem(getReplyViewModeStorageKey(user?.id));
-        return value === 'detailed' ? 'detailed' : 'compact';
-      } catch {
-        return 'compact';
+    const update = () => {
+      const online = typeof navigator === 'undefined' ? true : navigator.onLine;
+      setIsOnline(online);
+      if (!online) {
+        setRoundtableNotice({
+          type: 'warning',
+          message: '当前处于离线状态：可查看历史内容，但无法发起生成',
+        });
+      } else {
+        setRoundtableNotice((prev) => (prev?.message?.includes('离线状态') ? null : prev));
       }
-    })();
-    setReplyViewMode(cachedMode);
-    setExpandedMessageIds([]);
-  }, [user?.id]);
-
-  useEffect(() => {
-    if (!user?.id) {
-      return;
-    }
-    const trackingKey = `${user.id}:${replyViewMode}`;
-    if (trackedReplyModeKeyRef.current === trackingKey) {
-      return;
-    }
-    trackedReplyModeKeyRef.current = trackingKey;
-    void trackRuntimeEvent({
-      room_id: roomId || undefined,
-      user_id: user.id,
-      event_type: 'ui.reply_view_mode.applied',
-      event_payload: {
-        mode: replyViewMode,
-        source: 'cached_or_default',
-      },
-    }).catch((error) => console.error('记录回复展示模式失败:', error));
-  }, [replyViewMode, roomId, user?.id]);
+    };
+    update();
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
 
   useEffect(() => {
     void requestMissingSummaries();
   }, [requestMissingSummaries]);
-
-  useEffect(() => {
-    form.setFieldsValue(intentCard);
-  }, [form, intentCard]);
 
   useEffect(() => {
     if (!roomId) {
@@ -1123,41 +1089,20 @@ function Home() {
     return [
       {
         id: 'q1',
-        question: `${hint}，你更关心哪类结果？`,
+        question: `${hint}，用一句话说明你希望本次圆桌最终解决什么/达成什么？`,
         options: [
-          { id: 'q1o1', label: '增长/转化' },
-          { id: 'q1o2', label: '降本/效率' },
-          { id: 'q1o3', label: '风险/合规' },
-          { id: 'q1o4', label: '体验/口碑' },
-        ],
-      },
-      {
-        id: 'q2',
-        question: '有哪些限制条件必须满足？',
-        options: [
-          { id: 'q2o1', label: '预算有限' },
-          { id: 'q2o2', label: '时间紧' },
-          { id: 'q2o3', label: '人手少' },
-          { id: 'q2o4', label: '合规要求高' },
-        ],
-      },
-      {
-        id: 'q3',
-        question: '最担心的痛点是什么？',
-        options: [
-          { id: 'q3o1', label: '方向跑偏' },
-          { id: 'q3o2', label: '落地成本高' },
-          { id: 'q3o3', label: '结果不可量化' },
-          { id: 'q3o4', label: '团队执行阻力' },
+          { id: 'q1o1', label: '产出可执行方案' },
+          { id: 'q1o2', label: '验证方向可行性' },
+          { id: 'q1o3', label: '识别关键风险' },
+          { id: 'q1o4', label: '明确下一步行动' },
         ],
       },
     ];
   };
 
-  // 基于意图和大模型智能选择角色（优化版：使用同步调用+紧凑prompt+max_tokens限制）
-  const generateRolesByIntentWithAI = async (
-    intentData: IntentCardState,
-    availableTemplates: typeof roleTemplates
+  const generateRolesByDemandWithAI = async (
+    demandText: string,
+    availableTemplates: typeof roleTemplates,
   ): Promise<RoleMember[]> => {
     if (!selectedModelId || availableTemplates.length === 0) {
       return availableTemplates
@@ -1179,7 +1124,7 @@ function Home() {
       .map((tpl) => ({ id: tpl.id, name: tpl.name, stance: tpl.stance, cat: tpl.category || '' }));
 
     const prompt = `从候选角色中选3-6个参与讨论，确保覆盖建设+对抗/评审立场。
-目标:${intentData.coreGoal || '无'} 限制:${intentData.constraints || '无'} 痛点:${intentData.painPoints || '无'}
+原始需求:${(demandText || '无').slice(0, 1500)}
 候选:${JSON.stringify(roleCandidates)}
 只输出ID数组如[1,5,8]`;
 
@@ -1246,59 +1191,125 @@ function Home() {
     setCanvasUpdatedAt('');
     setAutoRoundCount(0);
     setAutoConversationEnabled(true);
-    
+
     // 如果没有开启高级模式，则并行执行意图分析+角色选择，加速至5秒内
     if (!isExpertMode) {
       const loadingMsg = message.loading('AI主持人正在分析需求并组建圆桌...', 0);
       try {
         const materialContent = uploadedMaterials.length > 0 
-          ? `附件材料摘要：${uploadedMaterials.map(m => m.summary || m.filename).join(';')}` 
+          ? `附件材料摘要：${uploadedMaterials.slice(0, 3).map(m => m.summary || m.filename).join(';')}` 
           : '';
-        const fullDemand = `${initialDemand}\n${materialContent}`;
+        const fullDemand = `${initialDemand}\n${materialContent}`.trim();
+        const demandForModel = fullDemand.slice(0, 1500);
+        const runId = Date.now();
+        intentAnalysisRunIdRef.current = runId;
 
         // 构建紧凑的角色候选列表（去除长文本减少token消耗）
         const roleCandidates = roleTemplates
           .filter((tpl) => tpl.is_active !== false)
+          .slice(0, 60)
           .map((tpl) => ({ id: tpl.id, name: tpl.name, stance: tpl.stance, cat: tpl.category || '' }));
 
-        // 紧凑 prompt：意图分析（单次调用提取意图卡片+期望结果）
-        const intentPrompt = `根据用户输入提炼意图卡片和期望结果。
-用户输入：${fullDemand}
-严格输出JSON：{"coreGoal":"核心目标(≤30字)","constraints":"限制条件(简明;无则填无)","painPoints":"核心痛点(简明;无则填无)","expectedResult":"期望结果(≤80字)"}`;
+        const intentPrompt = `根据用户输入生成"期望结果"。
+用户输入：${demandForModel}
+严格输出JSON：{"expectedResult":"期望结果(≤80字)"} 只输出JSON，不要有任何额外文字。`;
 
         // 紧凑 prompt：角色选择（独立调用，与意图分析并行）
         const rolePrompt = `从候选角色中选3-6个参与讨论，确保覆盖建设+对抗/评审立场。
-需求：${fullDemand}
+需求：${demandForModel}
 候选：${JSON.stringify(roleCandidates)}
 只输出ID数组如[1,5,8]`;
 
-        // 并行发起两次 LLM 调用
-        const [intentResult, roleResult] = await Promise.all([
-          syncChatByLLMConfig(selectedModelId, {
-            message: intentPrompt,
-            system_prompt: '只输出合法JSON，不要包含任何其他文字。',
-            max_tokens: 512,
-          }).then(raw => ({ raw, parsed: parseJsonObject(raw) })),
-          syncChatByLLMConfig(selectedModelId, {
-            message: rolePrompt,
-            system_prompt: '只输出JSON格式的角色ID数组，不要有任何解释文字。',
-            max_tokens: 128,
-          }).then(raw => parseJsonObject(raw)),
+        const intentPromise = syncChatByLLMConfig(selectedModelId, {
+          message: intentPrompt,
+          system_prompt: '只输出合法JSON，不要包含任何其他文字。',
+          max_tokens: 256,
+        }).then(raw => ({ raw, parsed: parseJsonObject(raw) }));
+
+        const rolePromise = syncChatByLLMConfig(selectedModelId, {
+          message: rolePrompt,
+          system_prompt: '只输出JSON格式的角色ID数组，不要有任何解释文字。',
+          max_tokens: 96,
+        }).then(raw => parseJsonObject(raw));
+
+        const resultsPromise = Promise.all([intentPromise, rolePromise]) as Promise<[any, any]>;
+
+        const timeoutMs = 4800;
+        const timeoutPromise = new Promise<'timeout'>((resolve) => {
+          window.setTimeout(() => resolve('timeout'), timeoutMs);
+        });
+
+        const raced = await Promise.race([
+          resultsPromise.then((res) => ({ kind: 'ok' as const, res })),
+          timeoutPromise.then(() => ({ kind: 'timeout' as const })),
         ]);
+
+        const applyFallbackAndProceed = () => {
+          const fallbackExpected = `围绕「${(initialDemand.trim() || '当前需求').slice(0, 30)}」形成可执行方案`;
+          setExpectedResult(fallbackExpected);
+          const fallbackRoles = roleTemplates
+            .filter((tpl) => tpl.is_default)
+            .slice(0, 5)
+            .map((tpl) => ({
+              id: `role_${tpl.id}`,
+              name: tpl.name,
+              stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+              desc: tpl.description || '',
+              selected: true,
+              soulConfig: tpl.soul_config,
+            }));
+          setRoles(fallbackRoles);
+          setRolesReady(true);
+          setIntentReady(true);
+          setStep('roles');
+        };
+
+        if (raced.kind === 'timeout') {
+          applyFallbackAndProceed();
+          loadingMsg();
+          message.success('已快速进入角色矩阵（后台继续补全中）');
+
+          void resultsPromise.then(([intentResult, roleResult]) => {
+            if (intentAnalysisRunIdRef.current !== runId) {
+              return;
+            }
+            const parsedData = intentResult?.parsed;
+            const expectedText = String(parsedData?.expectedResult || '').trim();
+            if (expectedText) {
+              setExpectedResult(expectedText.slice(0, 120));
+            }
+
+            if (Array.isArray(roleResult) && roleResult.length > 0) {
+              const selectedRoles = roleTemplates
+                .filter((tpl) => roleResult.includes(tpl.id))
+                .map((tpl) => ({
+                  id: `role_${tpl.id}`,
+                  name: tpl.name,
+                  stance: tpl.stance as '建设' | '对抗' | '中立' | '评审',
+                  desc: tpl.description || '',
+                  selected: true,
+                  soulConfig: tpl.soul_config,
+                }));
+              if (selectedRoles.length > 0) {
+                setRoles(selectedRoles);
+                setRolesReady(true);
+              }
+            }
+          }).catch(() => undefined);
+
+          return;
+        }
+
+        const [intentResult, roleResult] = raced.res;
 
         const parsedData = intentResult.parsed;
         if (!parsedData) {
-          console.warn('意图JSON解析失败，模型原始响应:', intentResult.raw, '— 将使用默认意图卡片降级处理');
+          console.warn('期望结果JSON解析失败，模型原始响应:', intentResult.raw, '— 将使用降级期望结果');
         }
 
-        const fallbackGoal = initialDemand.trim().slice(0, 30) || '用户需求';
-        const newIntent = {
-          coreGoal: parsedData?.coreGoal || fallbackGoal,
-          constraints: parsedData?.constraints || '无',
-          painPoints: parsedData?.painPoints || '无'
-        };
-        setIntentCard(newIntent);
-        setExpectedResult(parsedData?.expectedResult || `围绕「${newIntent.coreGoal}」形成可执行方案`);
+        const fallbackExpected = `围绕「${(initialDemand.trim() || '当前需求').slice(0, 30)}」形成可执行方案`;
+        const expectedText = String(parsedData?.expectedResult || '').trim();
+        setExpectedResult(expectedText ? expectedText.slice(0, 120) : fallbackExpected);
 
         // 处理角色选择结果
         let selectedRoles: RoleMember[] = [];
@@ -1342,6 +1353,7 @@ function Home() {
         }
 
         setRoles(selectedRoles);
+        setRolesReady(true);
         setIntentReady(true);
         setStep('roles');
 
@@ -1363,7 +1375,7 @@ function Home() {
       {
         id: `s_${Date.now()}`,
         role: 'system',
-        content: '我将通过几个问题澄清你的真实意图，并同步生成结构化需求卡片。',
+        content: '我将通过几个问题澄清你的真实意图，并生成期望结果建议。',
       },
     ]);
   };
@@ -1371,21 +1383,14 @@ function Home() {
   const applyProbeAnswer = (questionId: string, answer: string) => {
     setProbeTurns((prev) => [...prev, { id: `u_${Date.now()}`, role: 'user', content: `${answer}` }]);
     if (questionId === 'q1') {
-      setIntentCard((prev) => ({ ...prev, coreGoal: prev.coreGoal || `围绕「${answer}」获得可执行方案与路径` }));
-    }
-    if (questionId === 'q2') {
-      setIntentCard((prev) => ({ ...prev, constraints: prev.constraints ? `${prev.constraints}；${answer}` : answer }));
-    }
-    if (questionId === 'q3') {
-      setIntentCard((prev) => ({ ...prev, painPoints: prev.painPoints ? `${prev.painPoints}；${answer}` : answer }));
+      setExpectedResult((prev) => (prev.trim() ? prev : `${answer}`));
     }
   };
 
   const confirmIntent = async () => {
-    const values = await form.validateFields();
-    setIntentCard(values);
-    if (!values.coreGoal?.trim()) {
-      message.warning('请先完善核心目标');
+    const demandText = initialDemand.trim();
+    if (!demandText) {
+      message.warning('请先输入需求或上传相关材料');
       return;
     }
     // 并行执行：生成期望结果 + 智能选择角色（两者无依赖关系）
@@ -1395,9 +1400,9 @@ function Home() {
       const needExpectedResult = !expectedResult.trim();
       const [expectedResultText, generatedRoles] = await Promise.all([
         needExpectedResult
-          ? generateExpectedResultByIntent(values as IntentCardState)
+          ? generateExpectedResultByDemand(demandText)
           : Promise.resolve(expectedResult.trim()),
-        generateRolesByIntentWithAI(values as IntentCardState, roleTemplates),
+        generateRolesByDemandWithAI(demandText, roleTemplates),
       ]);
       if (needExpectedResult && expectedResultText) {
         setExpectedResult(expectedResultText);
@@ -1437,114 +1442,6 @@ function Home() {
     setRoles((prev) => prev.map((role) => (role.id === roleId ? { ...role, selected: !role.selected } : role)));
   };
 
-  const selectScenarioTemplate = async (templateId: number) => {
-    const template = scenarioTemplates.find(t => t.id === templateId);
-    if (!template) return;
-    
-    // 如果没有输入需求，提示
-    if (!initialDemand.trim() && uploadedMaterials.length === 0) {
-      message.warning('请先输入一句话需求或上传需求文档');
-      return;
-    }
-
-    setIsCreatingWorkspace(true);
-    try {
-      // 1. 设置意图卡片（简单版本，后续可以接入大模型）
-      const mockIntent = {
-        coreGoal: initialDemand.trim() || `围绕上传的材料进行${template.name}讨论`,
-        constraints: '无',
-        painPoints: '无',
-      };
-      setIntentCard(mockIntent);
-      setIntentReady(true);
-
-      // 2. 配置角色
-      const generatedRoles: RoleMember[] = roleTemplates
-        .filter(r => template.preset_roles.includes(r.id))
-        .map(r => ({
-          id: `role_${r.id}`,
-          name: r.name,
-          stance: (r.stance as '建设' | '对抗' | '中立' | '评审'),
-          desc: r.description || '',
-          selected: true,
-          soulConfig: r.soul_config,
-        }));
-      setRoles(generatedRoles);
-      setRolesReady(true);
-      setJudgeState({ score: 0, reason: '', reached: false, consensusCount: 0, resolvedPainPoints: 0, nextFocus: '' });
-      setJudgeScore(0);
-      setJudgeReason('');
-      setConsensusBoard({ summary: '', consensus: [], disputes: [], nextQuestions: [] });
-      setCanvasSnapshot(null);
-
-      // 3. 准备房间
-      setRoomReady(true);
-      const newRoomId = `room_${Date.now().toString(36)}`;
-      setRoomId(newRoomId);
-      setStep('roundtable_view');
-      
-      // 4. 生成期望结果并启动
-      let currentExpectedResult = expectedResult;
-      if (!currentExpectedResult) {
-         currentExpectedResult = `产出符合【${template.name}】视角的结论和可执行方案`;
-         setExpectedResult(currentExpectedResult);
-      }
-
-      // 如果模板有特定的 system_prompt，可以覆盖
-      if (template.system_prompt_override) {
-        setSystemPrompt(template.system_prompt_override);
-      }
-
-      const seedLines = [
-        '【系统提示：圆桌会议已启动】',
-        `本次会议主题：${template.name}`,
-        `讨论目标：${mockIntent.coreGoal}`,
-        currentExpectedResult ? `期望结果：${currentExpectedResult}` : '',
-        '请各角色先给出最关键的 3-5 条核心要点。',
-      ].filter(Boolean);
-      
-      setPendingRoundtableRun({ roomId: newRoomId, text: seedLines.join('\n'), stage: 'brief', trigger: 'host' });
-      message.success(`已应用模板：${template.name}，并自动进入圆桌开始演练`);
-      void trackRuntimeEvent({
-        room_id: newRoomId,
-        event_type: 'template.selected',
-        event_payload: { template_id: template.id, template_name: template.name },
-      }).catch((error) => console.error('记录模板事件失败:', error));
-
-      // 创建左侧菜单项
-      const defaultTitle = `圆桌空间_${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
-      const newRoom: RoundtableRoom = {
-        id: newRoomId,
-        name: defaultTitle,
-        createdAt: new Date().toISOString(),
-      };
-      setRoundtableRooms((prev) => [newRoom, ...prev]);
-
-      // 异步更新标题
-      const generateAndUpdateTitle = async () => {
-        try {
-          const generatedTitle = await generateIntentSummaryTitle({
-            initialDemand,
-            intentCard: mockIntent,
-            probeTurns: [],
-          }, new Date());
-
-          setRoundtableRooms((prev) =>
-            prev.map((room) =>
-              room.id === newRoomId ? { ...room, name: generatedTitle } : room
-            )
-          );
-        } catch (e) {
-          console.error(e);
-        }
-      };
-      generateAndUpdateTitle();
-
-    } finally {
-      setIsCreatingWorkspace(false);
-    }
-  };
-
   const addCustomRole = () => {
     if (!newRoleName.trim()) {
       message.warning('请输入角色名称');
@@ -1573,7 +1470,7 @@ function Home() {
     setIsReGeneratingRoles(true);
     const loadingMsg = message.loading('正在重新智能匹配角色组合...', 0);
     try {
-      const generatedRoles = await generateRolesByIntentWithAI(intentCard, roleTemplates);
+      const generatedRoles = await generateRolesByDemandWithAI(initialDemand, roleTemplates);
       setRoles(generatedRoles);
       message.success('已重新智能匹配角色组合');
     } catch (error) {
@@ -1658,8 +1555,8 @@ function Home() {
         try {
           const intentData = {
             initialDemand,
-            intentCard,
             probeTurns,
+            expectedResult,
           };
           const generatedTitle = await generateIntentSummaryTitle(intentData, new Date());
 
@@ -1678,7 +1575,6 @@ function Home() {
                 room_name: generatedTitle,
                 step: 'roundtable_view',
                 initial_demand: initialDemand,
-                intent_card: intentCard,
                 intent_ready: intentReady,
                 roles: roles,
                 roles_ready: rolesReady,
@@ -1715,7 +1611,6 @@ function Home() {
             room_name: newRoom.name,
             step: 'roundtable_view',
             initial_demand: initialDemand,
-            intent_card: intentCard,
             intent_ready: intentReady,
             roles: roles,
             roles_ready: rolesReady,
@@ -1744,9 +1639,6 @@ function Home() {
 
       const seedLines = [
         initialDemand.trim() ? `需求原始描述：${initialDemand.trim()}` : '',
-        intentCard.coreGoal ? `核心目标：${intentCard.coreGoal}` : '',
-        intentCard.constraints ? `限制条件：${intentCard.constraints}` : '',
-        intentCard.painPoints ? `关键痛点：${intentCard.painPoints}` : '',
         expectedResult.trim() ? `期望结果：${expectedResult.trim()}` : '',
         '请各角色先给出最关键的 3-5 条核心要点（不要输出总结性方案）。',
       ].filter(Boolean);
@@ -1768,7 +1660,6 @@ function Home() {
     setInitialDemand('');
     setProbeQuestions([]);
     setProbeTurns([]);
-    setIntentCard({ coreGoal: '', constraints: '', painPoints: '' });
     setIntentReady(false);
     setRolesReady(false);
     setRoles([]);
@@ -1892,6 +1783,48 @@ function Home() {
     }
   }, []);
 
+  const buildPriorMessagesForRuntime = useCallback((
+    source: typeof messages,
+    options?: { maxItems?: number; maxChars?: number; perItemMaxChars?: number; preferSummary?: boolean },
+  ) => {
+    const maxItems = options?.maxItems ?? 12;
+    const maxChars = options?.maxChars ?? 6000;
+    const perItemMaxChars = options?.perItemMaxChars ?? 1200;
+    const preferSummary = options?.preferSummary ?? false;
+
+    const picked: any[] = [];
+    let used = 0;
+    for (let i = source.length - 1; i >= 0 && picked.length < maxItems; i -= 1) {
+      const msg = source[i];
+      const rawContent = String(msg.content || '');
+      const candidate = preferSummary && msg.speakerType === 'agent' && msg.summary?.trim()
+        ? msg.summary.trim()
+        : rawContent;
+      const clipped = candidate.length > perItemMaxChars ? candidate.slice(0, perItemMaxChars) : candidate;
+      const remaining = maxChars - used;
+      if (remaining <= 0) {
+        break;
+      }
+      const finalText = clipped.length > remaining ? clipped.slice(0, Math.max(0, remaining)) : clipped;
+      if (!finalText.trim()) {
+        continue;
+      }
+      used += finalText.length;
+      picked.push({
+        id: msg.id,
+        speaker_id: msg.speakerId,
+        speaker_name: msg.speakerName,
+        speaker_type: msg.speakerType,
+        content: finalText,
+        summary: msg.summary,
+        summary_metrics: msg.summaryMetrics,
+        created_at: msg.createdAt,
+        streaming: false,
+      });
+    }
+    return picked.reverse();
+  }, [messages]);
+
   const sendToRoundtable = useCallback(async (
     overrideText?: string,
     overrideStage?: RoundtableStage,
@@ -1901,6 +1834,10 @@ function Home() {
   ) => {
     if (!selectedModelId) {
       message.warning('请选择一个可用模型');
+      return;
+    }
+    if (!isOnline) {
+      setRoundtableNotice({ type: 'warning', message: '当前离线：无法发起生成。请联网后重试。' });
       return;
     }
     const userText = (overrideText ?? userPrompt).trim();
@@ -1934,15 +1871,17 @@ function Home() {
       },
     ];
 
-    if (!overrideText) {
+    const shouldClearPrompt = !overrideText;
+    if (shouldClearPrompt) {
       setUserPrompt('');
     }
     setRoundtableStage(stage);
     setMessages(nextMessages);
     setSending(true);
+    setRoundtableNotice(null);
 
     try {
-      const task = await startRoundtableRun({
+      const basePayload = {
         room_id: roomId,
         model_id: selectedModelId,
         user_message: userText,
@@ -1952,7 +1891,7 @@ function Home() {
         auto_continue: forceAutoContinue ?? (stage === 'brief' ? autoConversationEnabled : false),
         max_dialogue_rounds: maxDialogueRounds,
         auto_round_count: autoRoundCount,
-        intent_card: intentCard,
+        initial_demand: initialDemand,
         moderator_summary_mode: moderatorSummaryMode,
         expected_result: expectedResult,
         system_prompt: overrideSystemPrompt ?? systemPrompt,
@@ -1965,35 +1904,87 @@ function Home() {
           selected: role.selected,
           soul_config: role.soulConfig,
         })),
-        prior_messages: messages.map((msg) => ({
-          id: msg.id,
-          speaker_id: msg.speakerId,
-          speaker_name: msg.speakerName,
-          speaker_type: msg.speakerType,
-          content: msg.content,
-          summary: msg.summary,
-          summary_metrics: msg.summaryMetrics,
-          created_at: msg.createdAt,
-          streaming: false,
-        })),
+        prior_messages: buildPriorMessagesForRuntime(messages),
         trigger,
-      });
+      } as any;
+
+      const errorTextOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+      const isContextOverflow = (text: string) =>
+        /context|上下文|maximum context|token|长度超限|too long/i.test(text);
+      const isRetryable = (text: string) =>
+        /Failed to fetch|NetworkError|Connection error|请求失败: 5|502|503|504|timeout|超时/i.test(text);
+
+      let task: any;
+      try {
+        task = await startRoundtableRun(basePayload);
+      } catch (err) {
+        const text = errorTextOf(err);
+        if (isContextOverflow(text)) {
+          setRoundtableNotice({ type: 'info', message: '内容过长，已自动压缩上下文并重试…' });
+          if (roomId) {
+            void trackRuntimeEvent({
+              room_id: roomId,
+              event_type: 'roundtable.context_overflow.retry',
+              event_payload: { stage, trigger },
+            }).catch(() => undefined);
+          }
+          const retryPayload = {
+            ...basePayload,
+            prior_messages: buildPriorMessagesForRuntime(messages, { maxItems: 6, maxChars: 2500, perItemMaxChars: 600, preferSummary: true }),
+          };
+          task = await startRoundtableRun(retryPayload);
+        } else if (isRetryable(text)) {
+          setRoundtableNotice({ type: 'info', message: '网络波动，正在重试…' });
+          if (roomId) {
+            void trackRuntimeEvent({
+              room_id: roomId,
+              event_type: 'roundtable.network_retry',
+              event_payload: { stage, trigger },
+            }).catch(() => undefined);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          task = await startRoundtableRun(basePayload);
+        } else {
+          throw err;
+        }
+      }
       activeRoundtableTaskIdRef.current = task.task_id;
       void streamRoundtableTaskUpdates(task.task_id);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '请求失败';
-      message.error(msg);
+      if (roomId) {
+        void trackRuntimeEvent({
+          room_id: roomId,
+          event_type: 'roundtable.run_failed',
+          event_payload: { stage, trigger },
+        }).catch(() => undefined);
+      }
+      setRoundtableNotice({
+        type: 'error',
+        message: '生成失败，请稍后重试或缩短输入内容',
+        actionText: '重试',
+        onAction: () => {
+          if (shouldClearPrompt) {
+            setUserPrompt(userText);
+          }
+          void sendToRoundtable();
+        },
+      });
       setMessages(messages);
       setSending(false);
       activeRoundtableTaskIdRef.current = null;
       roundtableStreamAbortRef.current = null;
+      if (shouldClearPrompt) {
+        setUserPrompt(userText);
+      }
     }
   }, [
     autoBrainstorm,
     autoConversationEnabled,
     autoRoundCount,
+    buildPriorMessagesForRuntime,
     expectedResult,
-    intentCard,
+    initialDemand,
+    isOnline,
     maxDialogueRounds,
     messages,
     promptTemplates,
@@ -2058,8 +2049,8 @@ function Home() {
 
     switch (action) {
       case 'focus':
-        overrideText = '（主持人提示）各位专家跑题了，请立刻回到我们的核心目标和痛点上！';
-        hiddenPrompt = `【系统最高指令】用户认为当前讨论已经偏离主题。请你接下来的发言必须强行拉回到核心目标「${intentCard.coreGoal}」，并针对痛点「${intentCard.painPoints}」给出看法，停止发散。`;
+        overrideText = '（主持人提示）各位专家跑题了，请立刻回到我们的原始需求与期望结果上！';
+        hiddenPrompt = `【系统最高指令】用户认为当前讨论已经偏离主题。请你接下来的发言必须强行拉回到原始需求「${(initialDemand || '').slice(0, 300)}」和期望结果「${(expectedResult || '').slice(0, 200)}」，停止发散。`;
         break;
       case 'conflict':
         overrideText = '（主持人提示）现在的讨论太温和了，我需要看到更尖锐的批评和对抗！';
@@ -2092,7 +2083,7 @@ function Home() {
     if (overrideText) {
       void sendToRoundtable(overrideText, roundtableStage, hiddenPrompt, 'host');
     }
-  }, [generateFinalPlan, intentCard.coreGoal, intentCard.painPoints, roomId, roomReady, roundtableStage, sendToRoundtable, sending]);
+  }, [expectedResult, generateFinalPlan, initialDemand, roomId, roomReady, roundtableStage, sendToRoundtable, sending]);
 
   const canGoRoles = intentReady;
 
@@ -2298,26 +2289,19 @@ function Home() {
               <StepDemandRecognition
                 initialDemand={initialDemand}
                 uploadedMaterials={uploadedMaterials}
-                intentCard={intentCard}
                 isExpertMode={isExpertMode}
-                scenarioTemplates={scenarioTemplates}
                 roomId={roomId}
                 preUploadRoomId={preUploadRoomId}
                 onInitialDemandChange={setInitialDemand}
                 onMaterialsAnalyzed={handleMaterialsAnalyzed}
                 onIntentSynthesized={(result: any) => {
-                  if (result.synthesized_intent.core_goal && !intentCard.coreGoal) {
-                    setIntentCard((prev) => ({
-                      ...prev,
-                      coreGoal: result.synthesized_intent.core_goal,
-                      constraints: result.synthesized_intent.constraints || prev.constraints,
-                      painPoints: result.synthesized_intent.pain_points || prev.painPoints,
-                    }));
+                  const expected = String(result?.synthesized_intent?.expected_result || '').trim();
+                  if (expected && !expectedResult.trim()) {
+                    setExpectedResult(expected);
                   }
                 }}
                 onStartIntentProbing={startIntentProbing}
                 onIsExpertModeChange={setIsExpertMode}
-                onSelectScenarioTemplate={selectScenarioTemplate}
               />
             )}
             
@@ -2325,26 +2309,19 @@ function Home() {
               <ExpertModeConfig
                 initialDemand={initialDemand}
                 uploadedMaterials={uploadedMaterials}
-                intentCard={intentCard}
                 isExpertMode={isExpertMode}
-                scenarioTemplates={scenarioTemplates}
                 roomId={roomId}
                 preUploadRoomId={preUploadRoomId}
                 onInitialDemandChange={setInitialDemand}
                 onMaterialsAnalyzed={handleMaterialsAnalyzed}
                 onIntentSynthesized={(result: any) => {
-                  if (result.synthesized_intent.core_goal && !intentCard.coreGoal) {
-                    setIntentCard((prev) => ({
-                      ...prev,
-                      coreGoal: result.synthesized_intent.core_goal,
-                      constraints: result.synthesized_intent.constraints || prev.constraints,
-                      painPoints: result.synthesized_intent.pain_points || prev.painPoints,
-                    }));
+                  const expected = String(result?.synthesized_intent?.expected_result || '').trim();
+                  if (expected && !expectedResult.trim()) {
+                    setExpectedResult(expected);
                   }
                 }}
                 onStartIntentProbing={startIntentProbing}
                 onIsExpertModeChange={setIsExpertMode}
-                onSelectScenarioTemplate={selectScenarioTemplate}
                 probeTurns={probeTurns}
                 probeQuestions={probeQuestions}
                 customProbeOptions={customProbeOptions}
@@ -2353,7 +2330,6 @@ function Home() {
                 onResetAnalysisState={() => {
                   setProbeQuestions([]);
                   setProbeTurns([]);
-                  setIntentCard({ coreGoal: '', constraints: '', painPoints: '' });
                   setExpectedResult('');
                   setAutoRoundCount(0);
                   setIntentReady(false);
@@ -2364,7 +2340,6 @@ function Home() {
                   setCanvasConsensus([]);
                   setCanvasDisputes([]);
                   setCanvasUpdatedAt('');
-                  form.resetFields();
                 }}
                 models={models}
                 loadingModels={loadingModels}
@@ -2377,20 +2352,21 @@ function Home() {
                 onExpectedResultChange={setExpectedResult}
                 maxDialogueRounds={maxDialogueRounds}
                 onMaxDialogueRoundsChange={setMaxDialogueRounds}
-                form={form}
                 generatingExpectedResult={generatingExpectedResult}
                 onGenerateExpectedResult={async () => {
-                  const values = await form.validateFields();
+                  if (!initialDemand.trim()) {
+                    message.warning('请先输入需求或上传相关材料');
+                    return;
+                  }
                   setGeneratingExpectedResult(true);
                   try {
-                    const generated = await generateExpectedResultByIntent(values as IntentCardState);
+                    const generated = await generateExpectedResultByDemand(initialDemand);
                     setExpectedResult(generated);
                     message.success('已生成期望结果');
                   } finally {
                     setGeneratingExpectedResult(false);
                   }
                 }}
-                onIntentCardChange={(val) => setIntentCard(val)}
                 onConfirmIntent={confirmIntent}
               />
             )}
@@ -2399,7 +2375,7 @@ function Home() {
               <StepRoleMatrix
                 roles={roles}
                 isReGeneratingRoles={isReGeneratingRoles}
-                intentCard={intentCard}
+                initialDemand={initialDemand}
                 intentReady={intentReady}
                 expectedResult={expectedResult}
                 maxDialogueRounds={maxDialogueRounds}
@@ -2487,22 +2463,21 @@ function Home() {
               <StepRoundtableView
                 roomReady={roomReady}
                 messages={messages}
-                expandedMessageIds={expandedMessageIds}
-                replyViewMode={replyViewMode}
                 judgeState={judgeState}
                 judgeScore={judgeScore}
                 judgeReason={judgeReason}
                 consensusBoard={consensusBoard}
                 runtimePendingTasks={runtimePendingTasks}
-                onToggleExpandedMessage={toggleExpandedMessage}
-                onReplyViewModeChange={handleReplyViewModeChange}
+                isSending={sending}
+                onStartDemo={() => void sendToRoundtable('请各角色先给出最关键的 3-5 条核心要点（不要输出总结性方案）。', 'brief', undefined, 'host', false)}
+                notice={roundtableNotice ? { ...roundtableNotice, closable: true, onClose: () => setRoundtableNotice(null) } : null}
               />
             )}
 
             {/* 共识摘要独立页面 */}
             {step === 'consensus_summary' && (
               <ConsensusSummary
-                intentCard={intentCard}
+                initialDemand={initialDemand}
                 expectedResult={expectedResult}
                 messages={messages}
                 roles={roles}
@@ -2518,7 +2493,7 @@ function Home() {
                 <RoundtableCanvas
                   key={roomId || 'default'}
                   roomId={roomId}
-                  intentAnchor={intentCard.coreGoal}
+                  topic={initialDemand}
                   messages={messages}
                   roles={roles}
                   expectedResult={expectedResult}
@@ -2576,7 +2551,7 @@ function Home() {
                   </Col>
                   <Col>
                     <Space direction={isMobile ? 'horizontal' : 'vertical'} size={4}>
-                      <Button type="primary" loading={sending} onClick={() => void sendToRoundtable()}>
+                      <Button type="primary" loading={sending} disabled={!isOnline} onClick={() => void sendToRoundtable()}>
                         发送
                       </Button>
                       <Button disabled={!sending} onClick={stopStreaming}>

@@ -62,9 +62,7 @@ class PromptRegistry:
             template=(
                 "{{prompt_base}}\n"
                 "你的身份：{{role_name}}（立场：{{role_stance}}）。\n"
-                "用户意图锚点：{{core_goal}}。\n"
-                "限制条件：{{constraints}}。\n"
-                "待解决痛点：{{pain_points}}。\n"
+                "用户原始需求：{{user_demand}}。\n"
                 "期望结果：{{expected_result}}。\n"
                 "请优先指出有价值的新信息、风险和分歧，不要复述别人已经说过的话。\n"
                 "如果你同意某个观点，必须补充证据、边界或执行条件，禁止空泛附和。"
@@ -129,7 +127,7 @@ class PromptRegistry:
             name="role_user_prompt",
             template=(
                 "【讨论阶段】{{stage}}\n"
-                "【核心目标】{{core_goal}}\n"
+                "【原始需求】{{user_demand}}\n"
                 "【角色身份】{{role_name}}（{{role_stance}}）\n"
                 "【讨论摘要】\n{{memory_summary}}\n\n"
                 "【本轮输入】\n{{user_message}}\n\n"
@@ -148,10 +146,8 @@ class PromptRegistry:
             name="judge_evaluate",
             template=(
                 "你是圆桌讨论的后台裁判。\n"
-                "请根据目标、约束、痛点与当前讨论内容，评估当前讨论的收敛进度与完成质量。\n\n"
-                "【核心目标】{{core_goal}}\n"
-                "【限制条件】{{constraints}}\n"
-                "【核心痛点】{{pain_points}}\n"
+                "请根据原始需求与当前讨论内容，评估当前讨论的收敛进度与完成质量。\n\n"
+                "【原始需求】{{user_demand}}\n"
                 "【期望结果】{{expected_result}}\n"
                 "【当前轮次】{{current_round}}\n"
                 "【讨论内容】\n{{transcript}}\n\n"
@@ -175,7 +171,7 @@ class PromptRegistry:
             template=(
                 "你是圆桌讨论的书记员。\n"
                 "请基于当前讨论内容提炼当前已经形成的共识、尚未解决的争议，以及最值得继续追问的问题。\n\n"
-                "【核心目标】{{core_goal}}\n"
+                "【原始需求】{{user_demand}}\n"
                 "【期望结果】{{expected_result}}\n"
                 "【讨论内容】\n{{transcript}}\n\n"
                 "请严格输出 JSON：\n"

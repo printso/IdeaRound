@@ -29,7 +29,7 @@ class WorkspaceData(BaseModel):
     room_name: str
     step: str
     initial_demand: str
-    intent_card: Dict[str, str]
+    intent_card: Optional[Dict[str, Any]] = None
     intent_ready: bool
     roles: List[RoleMember]
     roles_ready: bool

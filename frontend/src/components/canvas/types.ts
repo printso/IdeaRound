@@ -41,7 +41,7 @@ export type MessageItem = {
   id: string;
   speakerId: string;
   speakerName: string;
-  speakerType: 'user' | 'agent';
+  speakerType: 'user' | 'agent' | 'host';
   content: string;
   streaming?: boolean;
   createdAt: string;
@@ -57,7 +57,7 @@ export type RoleMember = {
 
 export type RoundtableCanvasProps = {
   roomId: string;
-  intentAnchor: string;
+  topic: string;
   messages?: MessageItem[];
   roles?: RoleMember[];
   expectedResult?: string;

@@ -15,7 +15,15 @@ const toSnakeCase = (obj: any): any => {
     for (const [key, value] of Object.entries(obj)) {
       // 转换驼峰为蛇形
       const snakeKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
-      result[snakeKey] = toSnakeCase(value);
+      const nextValue = toSnakeCase(value);
+      if (typeof nextValue === 'undefined') {
+        continue;
+      }
+      if (typeof result[snakeKey] === 'undefined') {
+        result[snakeKey] = nextValue;
+        continue;
+      }
+      result[snakeKey] = nextValue;
     }
     return result;
   }
@@ -27,12 +35,8 @@ export interface WorkspaceData {
   room_name: string;
   step: string;
   initial_demand: string;
-  intent_card: {
-    coreGoal: string;
-    constraints: string;
-    painPoints: string;
-  };
   intent_ready: boolean;
+  intent_card?: Record<string, unknown>;
   roles: Array<{
     id: string;
     name: string;
@@ -113,7 +117,11 @@ export interface WorkspaceResponse {
  */
 export const createWorkspace = async (workspaceData: WorkspaceData): Promise<WorkspaceResponse> => {
   try {
-    const snakeCaseData = toSnakeCase(workspaceData);
+    const normalized = {
+      ...workspaceData,
+      intent_card: workspaceData.intent_card ?? {},
+    };
+    const snakeCaseData = toSnakeCase(normalized);
 
     return await requestJson<WorkspaceResponse>(buildWorkspaceUrl(), {
       method: 'POST',
@@ -178,7 +186,11 @@ export const getWorkspace = async (roomId: string): Promise<WorkspaceResponse | 
  */
 export const updateWorkspace = async (roomId: string, workspaceData: WorkspaceData): Promise<WorkspaceResponse> => {
   try {
-    const snakeCaseData = toSnakeCase(workspaceData);
+    const normalized = {
+      ...workspaceData,
+      intent_card: workspaceData.intent_card ?? {},
+    };
+    const snakeCaseData = toSnakeCase(normalized);
 
     return await requestJson<WorkspaceResponse>(buildWorkspaceUrl(roomId), {
       method: 'PUT',

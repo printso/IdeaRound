@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { Spin } from 'antd';
 import { AuthProvider } from './contexts/AuthContext';
 import AuthGuard from './components/AuthGuard';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const Home = lazy(() => import('./pages/Home'));
 const Login = lazy(() => import('./pages/Login'));
@@ -19,38 +20,40 @@ function App() {
   return (
     <AuthProvider>
       <Router>
-        <Suspense fallback={<PageFallback />}>
-          <Routes>
-            <Route path="/login" element={<Login />} />
+        <ErrorBoundary>
+          <Suspense fallback={<PageFallback />}>
+            <Routes>
+              <Route path="/login" element={<Login />} />
 
-            <Route
-              path="/"
-              element={
-                <AuthGuard requireAuth={true}>
-                  <Home />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/admin"
-              element={
-                <AuthGuard requireAuth={true}>
-                  <AdminDashboard />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/admin/chat"
-              element={
-                <AuthGuard requireAuth={true}>
-                  <ModelChat />
-                </AuthGuard>
-              }
-            />
+              <Route
+                path="/"
+                element={
+                  <AuthGuard requireAuth={true}>
+                    <Home />
+                  </AuthGuard>
+                }
+              />
+              <Route
+                path="/admin"
+                element={
+                  <AuthGuard requireAuth={true}>
+                    <AdminDashboard />
+                  </AuthGuard>
+                }
+              />
+              <Route
+                path="/admin/chat"
+                element={
+                  <AuthGuard requireAuth={true}>
+                    <ModelChat />
+                  </AuthGuard>
+                }
+              />
 
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Suspense>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
+        </ErrorBoundary>
       </Router>
     </AuthProvider>
   );

@@ -8,7 +8,7 @@ export interface RuntimeTaskRequest {
   transcript: string;
   expected_result?: string;
   current_round?: number;
-  intent_card?: Record<string, string>;
+  initial_demand?: string;
   trigger?: string;
 }
 
@@ -43,7 +43,7 @@ export interface RuntimeRoundtableRunRequest {
   auto_continue: boolean;
   max_dialogue_rounds: number;
   auto_round_count: number;
-  intent_card?: Record<string, string>;
+  initial_demand?: string;
   expected_result?: string;
   system_prompt?: string;
   prompt_templates?: Record<string, string>;
@@ -165,6 +165,7 @@ export const streamRuntimeTask = async (
   taskId: string,
   callbacks: {
     onTask: (task: RuntimeTaskResponse, event: string) => void;
+    onDelta?: (delta: { msg_id: string; text: string }, event: string) => void;
     onDone: () => void;
     onError: (error: string) => void;
   },
@@ -221,7 +222,14 @@ export const streamRuntimeTask = async (
         if (!dataStr) continue;
 
         try {
-          const data = JSON.parse(dataStr) as { event?: string; task?: RuntimeTaskResponse };
+          const data = JSON.parse(dataStr) as { event?: string; task?: RuntimeTaskResponse; delta?: { msg_id?: unknown; text?: unknown } };
+          if (data.delta && callbacks.onDelta) {
+            const msgId = String(data.delta.msg_id || '');
+            const text = String(data.delta.text || '');
+            if (msgId && text) {
+              callbacks.onDelta({ msg_id: msgId, text }, data.event || currentEvent);
+            }
+          }
           if (data.task) {
             callbacks.onTask(data.task, data.event || currentEvent);
           }

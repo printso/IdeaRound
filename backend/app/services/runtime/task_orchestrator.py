@@ -353,10 +353,7 @@ def _build_roundtable_system_prompt(
     guard = safety_guard or get_safety_guard()
 
     prompt_templates = payload.get("prompt_templates") or {}
-    intent_card = payload.get("intent_card") or {}
-    core_goal = intent_card.get("coreGoal") or intent_card.get("core_goal") or "未提供"
-    constraints = intent_card.get("constraints") or ""
-    pain_points = intent_card.get("painPoints") or intent_card.get("pain_points") or ""
+    user_demand = _safe_text(payload.get("initial_demand")) or _safe_text(payload.get("user_message")) or "未提供"
     expected_result = payload.get("expected_result") or ""
     role_name = role.get("name") or "角色"
     role_stance = role.get("stance") or "中立"
@@ -367,9 +364,7 @@ def _build_roundtable_system_prompt(
         prompt_base=prompt_templates.get("prompt_base") or "你是圆桌创意中的一个角色，请保持高信噪比，避免客套话、重复和盲目附和。",
         role_name=role_name,
         role_stance=role_stance,
-        core_goal=core_goal,
-        constraints=constraints or "未提供",
-        pain_points=pain_points or "未提供",
+        user_demand=user_demand,
         expected_result=expected_result or "未提供",
     )
 
@@ -424,16 +419,12 @@ def _build_roundtable_user_prompt(
 
     role_name = role.get("name") or "角色"
     role_stance = role.get("stance") or "中立"
-    core_goal = (
-        (payload.get("intent_card") or {}).get("coreGoal")
-        or (payload.get("intent_card") or {}).get("core_goal")
-        or "未指定目标"
-    )
+    user_demand = _safe_text(payload.get("initial_demand")) or _safe_text(payload.get("user_message")) or "未指定需求"
 
     return registry.render(
         "role_user_prompt",
         stage=stage,
-        core_goal=core_goal,
+        user_demand=user_demand,
         role_name=role_name,
         role_stance=role_stance,
         memory_summary=memory_summary or "暂无摘要",
@@ -480,7 +471,7 @@ async def _evaluate_roundtable(
     model_router = get_model_router()
 
     transcript = _build_recent_transcript(messages, memory_summary=memory_summary, max_messages=10, max_chars=3600)
-    intent_card = payload.get("intent_card") or {}
+    user_demand = _safe_text(payload.get("initial_demand")) or _safe_text(payload.get("user_message")) or "未提供"
 
     # 使用辅助模型进行评估（如果配置了）
     eval_settings = await model_router.get_settings_for_task(
@@ -491,9 +482,7 @@ async def _evaluate_roundtable(
         try:
             progress_prompt = registry.render(
                 "judge_evaluate",
-                core_goal=intent_card.get("coreGoal") or intent_card.get("core_goal") or "未提供",
-                constraints=intent_card.get("constraints") or "未提供",
-                pain_points=intent_card.get("painPoints") or intent_card.get("pain_points") or "未提供",
+                user_demand=user_demand,
                 expected_result=payload.get("expected_result") or "",
                 current_round=current_round,
                 transcript=transcript,
@@ -516,7 +505,7 @@ async def _evaluate_roundtable(
         try:
             board_prompt = registry.render(
                 "scribe_board",
-                core_goal=intent_card.get("coreGoal") or intent_card.get("core_goal") or "未提供",
+                user_demand=user_demand,
                 expected_result=payload.get("expected_result") or "",
                 transcript=transcript,
             )

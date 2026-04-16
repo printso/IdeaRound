@@ -1,6 +1,6 @@
 // Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
-import { memo, useCallback, useEffect, useRef } from 'react';
-import { Avatar, Button, Card, Col, Empty, Grid, List, Progress, Row, Space, Tag, Tooltip, Typography } from 'antd';
+import { memo, useEffect, useRef } from 'react';
+import { Alert, Avatar, Button, Card, Col, Empty, Grid, List, Progress, Row, Space, Tag, Tooltip, Typography } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConsensusBoardState, JudgeState, RoundtableMessage } from '../../hooks/useWorkspace';
@@ -10,33 +10,33 @@ const { Text } = Typography;
 export interface StepRoundtableViewProps {
   roomReady: boolean;
   messages: RoundtableMessage[];
-  expandedMessageIds: string[];
-  replyViewMode: 'compact' | 'detailed';
   judgeState: JudgeState;
   judgeScore: number;
   judgeReason: string;
   consensusBoard: ConsensusBoardState;
   runtimePendingTasks: number;
-  onToggleExpandedMessage: (id: string) => void;
-  onReplyViewModeChange: (mode: 'compact' | 'detailed') => void;
+  isSending: boolean;
+  onStartDemo: () => void;
+  notice?: {
+    type: 'info' | 'warning' | 'error';
+    message: string;
+    actionText?: string;
+    onAction?: () => void;
+    closable?: boolean;
+    onClose?: () => void;
+  } | null;
 }
 
 interface MessageItemProps {
   item: RoundtableMessage;
-  isExpanded: boolean;
-  replyViewMode: 'compact' | 'detailed';
-  onToggleExpand: (id: string) => void;
 }
 
-const MessageItem = memo(function MessageItem({ item, isExpanded, replyViewMode, onToggleExpand }: MessageItemProps) {
+const MessageItem = memo(function MessageItem({ item }: MessageItemProps) {
   const isHost = item.speakerType === 'host';
-  const canUseCompact = item.speakerType === 'agent' && replyViewMode === 'compact';
   const typingPlaceholder = item.speakerType === 'host'
     ? '主持人正在输入...'
     : `${item.speakerName || '当前角色'}正在输入...`;
-  const displayContent = canUseCompact && !isExpanded
-    ? (item.summary?.trim() || (item.summaryStatus === 'loading' ? '正在提炼核心要点...' : item.content || (item.streaming ? typingPlaceholder : '正在思考...')))
-    : (item.content || (item.streaming ? typingPlaceholder : '正在思考...'));
+  const displayContent = item.content || (item.streaming ? typingPlaceholder : '正在思考...');
 
   return (
     <List.Item
@@ -69,33 +69,9 @@ const MessageItem = memo(function MessageItem({ item, isExpanded, replyViewMode,
                 <Text strong>{item.speakerName}</Text>
                 {isHost && <Tag color="gold">调度</Tag>}
                 {item.streaming && <Tag color="processing">正在输入</Tag>}
-                {canUseCompact && !isExpanded && <Tag color="blue">精简模式</Tag>}
-                {canUseCompact && isExpanded && <Tag color="gold">原文展开</Tag>}
               </Space>
               <Text type="secondary">{item.createdAt}</Text>
             </Space>
-            {canUseCompact && (
-              <Space size={4} wrap>
-                <Button
-                  type="link"
-                  size="small"
-                  style={{ paddingInline: 0 }}
-                  onClick={() => onToggleExpand(item.id)}
-                >
-                  {isExpanded ? '收起原文' : '展开原文'}
-                </Button>
-                {typeof item.summaryMetrics?.semantic_consistency === 'number' && (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    语义一致性 {item.summaryMetrics.semantic_consistency}%
-                  </Text>
-                )}
-                {item.summaryStatus === 'loading' && (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    摘要生成中
-                  </Text>
-                )}
-              </Space>
-            )}
             <div className="roundtable-reply-content">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {displayContent}
@@ -111,15 +87,14 @@ const MessageItem = memo(function MessageItem({ item, isExpanded, replyViewMode,
 export function StepRoundtableView({
   roomReady,
   messages,
-  expandedMessageIds,
-  replyViewMode,
   judgeState,
   judgeScore,
   judgeReason,
   consensusBoard,
   runtimePendingTasks,
-  onToggleExpandedMessage,
-  onReplyViewModeChange,
+  isSending,
+  onStartDemo,
+  notice,
 }: StepRoundtableViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const screens = Grid.useBreakpoint();
@@ -135,10 +110,6 @@ export function StepRoundtableView({
   const activeTypingLabel = activeStreamingNames.length > 0
     ? `当前正在输入：${activeStreamingNames.join('、')}`
     : '';
-
-  const handleToggle = useCallback((id: string) => {
-    onToggleExpandedMessage(id);
-  }, [onToggleExpandedMessage]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -161,25 +132,6 @@ export function StepRoundtableView({
                   <Tag>{messages.length}</Tag>
                   {activeTypingLabel && <Tag color="processing">{activeTypingLabel}</Tag>}
                 </Space>
-                <Space>
-                  <Text type="secondary" style={{ fontSize: 12 }}>回复展示</Text>
-                  <Space.Compact>
-                    <Button
-                      size="small"
-                      type={replyViewMode === 'compact' ? 'primary' : 'default'}
-                      onClick={() => onReplyViewModeChange('compact')}
-                    >
-                      精简
-                    </Button>
-                    <Button
-                      size="small"
-                      type={replyViewMode === 'detailed' ? 'primary' : 'default'}
-                      onClick={() => onReplyViewModeChange('detailed')}
-                    >
-                      详细
-                    </Button>
-                  </Space.Compact>
-                </Space>
               </Space>
             }
             style={{ borderRadius: 8, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
@@ -191,16 +143,40 @@ export function StepRoundtableView({
                 ref={scrollContainerRef}
                 style={{ flex: 1, minHeight: 0, maxHeight: isMobile ? 'calc(100dvh - 300px)' : 'calc(100vh - 350px)', overflowY: 'auto', padding: isMobile ? '0 8px 8px' : '0 16px 16px', overflowX: 'hidden' }}
               >
-                {messages.length === 0 && <Empty description="暂无讨论内容，先在底部输入并发送" />}
+                {!!notice?.message && (
+                  <Alert
+                    style={{ margin: isMobile ? '0 0 8px' : '0 0 12px' }}
+                    type={notice.type}
+                    message={notice.message}
+                    showIcon
+                    closable={notice.closable}
+                    onClose={notice.onClose}
+                    action={
+                      notice.actionText ? (
+                        <Button size="small" type="text" onClick={notice.onAction}>
+                          {notice.actionText}
+                        </Button>
+                      ) : undefined
+                    }
+                  />
+                )}
+                {messages.length === 0 && (
+                  <Empty
+                    description={runtimePendingTasks > 0 || isSending ? '圆桌已启动，AI 正在生成中…' : '暂无讨论内容，可直接开始演练'}
+                  >
+                    <Space wrap>
+                      <Button type="primary" loading={isSending} onClick={onStartDemo}>
+                        开始演练
+                      </Button>
+                    </Space>
+                  </Empty>
+                )}
                 <List
                   dataSource={messages}
                   renderItem={(item) => (
                     <MessageItem
                       key={item.id}
                       item={item}
-                      isExpanded={expandedMessageIds.includes(item.id)}
-                      replyViewMode={replyViewMode}
-                      onToggleExpand={handleToggle}
                     />
                   )}
                   pagination={messages.length > 50 ? {

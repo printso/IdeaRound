@@ -121,7 +121,7 @@ interface Message {
   id: string;
   speakerId: string;
   speakerName: string;
-  speakerType: 'user' | 'agent';
+  speakerType: 'user' | 'agent' | 'host';
   content: string;
   createdAt: string;
 }
@@ -134,11 +134,7 @@ interface RoleMember {
 }
 
 interface ConsensusSummaryProps {
-  intentCard: {
-    coreGoal: string;
-    constraints: string;
-    painPoints: string;
-  };
+  initialDemand: string;
   expectedResult: string;
   messages: Message[];
   roles: RoleMember[];
@@ -148,7 +144,7 @@ interface ConsensusSummaryProps {
 }
 
 const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
-  intentCard,
+  initialDemand,
   expectedResult,
   messages,
   roles,
@@ -194,9 +190,9 @@ const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
   const keywords = useMemo(
     () =>
       extractKeywordCandidates(
-        `${intentCard.coreGoal} ${expectedResult} ${intentCard.constraints} ${intentCard.painPoints}`,
+        `${initialDemand} ${expectedResult}`,
       ),
-    [expectedResult, intentCard.constraints, intentCard.coreGoal, intentCard.painPoints],
+    [expectedResult, initialDemand],
   );
   const focusedFindings = useMemo(() => {
     const candidates: Array<{ text: string; score: number }> = [];
@@ -269,7 +265,7 @@ const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
   const handleExport = () => {
     let content = `# 圆桌共识报告\n\n`;
     content += `> 生成时间：${new Date().toLocaleString('zh-CN')}\n`;
-    content += `> 需求：${intentCard.coreGoal || '-'}\n\n`;
+    content += `> 需求：${initialDemand || '-'}\n\n`;
     content += `> 状态：${stageSummary}\n\n`;
 
     if (finalPlanMessages.length > 0) {
@@ -347,9 +343,9 @@ const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
                 }}
-                title={intentCard.coreGoal || '未指定'}
+                title={initialDemand || '未指定'}
               >
-                {intentCard.coreGoal || '未指定'}
+                {initialDemand || '未指定'}
               </Text>
               <Space size={8}>
                 <Tag color={stageTagColor}>{stageSummary}</Tag>
@@ -483,27 +479,11 @@ const ConsensusSummary: React.FC<ConsensusSummaryProps> = ({
               </Paragraph>
             </Card>
 
-            {/* 约束与痛点 - 简化显示 */}
-            {(intentCard.constraints || intentCard.painPoints) && (
-              <Card title="约束与痛点" style={{ borderRadius: 12, marginBottom: 12 }} size="small">
-                <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  {intentCard.constraints && (
-                    <div>
-                      <Text type="secondary" style={{ fontSize: 12 }}>限制条件</Text>
-                      <Paragraph style={{ marginBottom: 0, fontSize: 13 }} ellipsis={{ rows: 2 }}>
-                        {intentCard.constraints}
-                      </Paragraph>
-                    </div>
-                  )}
-                  {intentCard.painPoints && (
-                    <div>
-                      <Text type="secondary" style={{ fontSize: 12 }}>待解决痛点</Text>
-                      <Paragraph style={{ marginBottom: 0, fontSize: 13 }} ellipsis={{ rows: 2 }}>
-                        {intentCard.painPoints}
-                      </Paragraph>
-                    </div>
-                  )}
-                </Space>
+            {initialDemand.trim() && (
+              <Card title="核心议题" style={{ borderRadius: 12, marginBottom: 12 }} size="small">
+                <Paragraph style={{ marginBottom: 0, fontSize: 13 }} ellipsis={{ rows: 3, expandable: true }}>
+                  {initialDemand.trim()}
+                </Paragraph>
               </Card>
             )}
 

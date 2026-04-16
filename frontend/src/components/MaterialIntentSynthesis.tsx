@@ -203,7 +203,9 @@ const MaterialIntentSynthesis: React.FC<MaterialIntentSynthesisProps> = ({
             <Col span={24}>
               <Card size="small" title="🔍 核心意图指标" style={{ background: '#fafafa' }}>
                 <Space wrap>
-                  {result.core_intent_indicators.map((indicator) => (
+                  {result.core_intent_indicators
+                    .filter((indicator) => !['goal', 'constraint', 'problem'].includes(indicator))
+                    .map((indicator) => (
                     <Tag
                       key={indicator}
                       icon={getIntentIcon(indicator)}
@@ -219,18 +221,7 @@ const MaterialIntentSynthesis: React.FC<MaterialIntentSynthesisProps> = ({
           </Row>
 
           <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-            <Col xs={24} lg={12}>
-              <Card
-                size="small"
-                title="🎯 核心目标"
-                extra={<Tag color="blue">GOAL</Tag>}
-              >
-                <Paragraph ellipsis={{ rows: 3, expandable: true }}>
-                  {result.synthesized_intent.core_goal || '暂无'}
-                </Paragraph>
-              </Card>
-            </Col>
-            <Col xs={24} lg={12}>
+            <Col span={24}>
               <Card
                 size="small"
                 title="📋 需求描述"
@@ -238,31 +229,6 @@ const MaterialIntentSynthesis: React.FC<MaterialIntentSynthesisProps> = ({
               >
                 <Paragraph ellipsis={{ rows: 3, expandable: true }}>
                   {result.synthesized_intent.requirements || '暂无'}
-                </Paragraph>
-              </Card>
-            </Col>
-          </Row>
-
-          <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-            <Col xs={24} lg={12}>
-              <Card
-                size="small"
-                title="⚠️ 限制条件"
-                extra={<Tag color="orange">CONSTRAINT</Tag>}
-              >
-                <Paragraph ellipsis={{ rows: 3, expandable: true }}>
-                  {result.synthesized_intent.constraints || '暂无'}
-                </Paragraph>
-              </Card>
-            </Col>
-            <Col xs={24} lg={12}>
-              <Card
-                size="small"
-                title="🔥 痛点问题"
-                extra={<Tag color="red">PROBLEM</Tag>}
-              >
-                <Paragraph ellipsis={{ rows: 3, expandable: true }}>
-                  {result.synthesized_intent.pain_points || '暂无'}
                 </Paragraph>
               </Card>
             </Col>
