@@ -123,21 +123,7 @@ async def start_roundtable_run(
     if not any(message.get("id") == user_message_id for message in current_messages):
         current_messages.append(user_message_payload)
     
-    # 获取第一个选中的角色，预添加 typing 状态
     selected_roles = [role for role in request.roles if role.selected]
-    if selected_roles:
-        first_role = selected_roles[0]
-        typing_msg = {
-            "id": f"m_{first_role.id}_{uuid.uuid4().hex[:10]}",
-            "speaker_id": str(first_role.id) if first_role.id else "",
-            "speaker_name": str(first_role.name) if first_role.name else "角色",
-            "speaker_type": "agent",
-            "content": "正在组织语言...",
-            "streaming": True,
-            "created_at": _utcnow().isoformat(),
-        }
-        current_messages.append(typing_msg)
-    
     task = await runtime_service._create_task_from_payload(
         "roundtable_orchestration",
         request.room_id,
@@ -167,7 +153,7 @@ async def start_roundtable_run(
         db,
     )
     
-    # 立即推送包含 typing 状态的初始状态到 Redis，确保前端订阅时能立即看到
+    # 立即推送初始状态到 Redis，确保前端订阅时能立即看到用户消息与任务状态
     initial_result_payload = {
         "messages": current_messages,
         "stage": request.roundtable_stage or "brief",

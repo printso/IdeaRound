@@ -1,6 +1,7 @@
 // Generated with Engineering Prompt v2026.04 - Quality & Efficiency Enforced
 import { memo, useEffect, useRef } from 'react';
-import { Alert, Avatar, Button, Card, Col, Empty, Grid, List, Progress, Row, Space, Tag, Tooltip, Typography } from 'antd';
+import { Alert, Avatar, Button, Card, Col, Dropdown, Empty, Grid, List, Progress, Row, Space, Tag, Tooltip, Typography } from 'antd';
+import { DownloadOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConsensusBoardState, JudgeState, RoundtableMessage } from '../../hooks/useWorkspace';
@@ -13,10 +14,21 @@ export interface StepRoundtableViewProps {
   judgeState: JudgeState;
   judgeScore: number;
   judgeReason: string;
+  discussionMetrics?: {
+    round: number;
+    new_points: number;
+    duplicate_rate: number;
+    problem_solution_ratio: string;
+    conflict_count: number;
+    avg_role_duration_ms: number;
+    resolved_topics: number;
+  } | null;
   consensusBoard: ConsensusBoardState;
   runtimePendingTasks: number;
   isSending: boolean;
+  exportingFormat?: 'md' | 'pdf' | 'docx' | null;
   onStartDemo: () => void;
+  onExport: (format: 'md' | 'pdf' | 'docx') => void;
   notice?: {
     type: 'info' | 'warning' | 'error';
     message: string;
@@ -33,10 +45,7 @@ interface MessageItemProps {
 
 const MessageItem = memo(function MessageItem({ item }: MessageItemProps) {
   const isHost = item.speakerType === 'host';
-  const typingPlaceholder = item.speakerType === 'host'
-    ? '主持人正在输入...'
-    : `${item.speakerName || '当前角色'}正在输入...`;
-  const displayContent = item.content || (item.streaming ? typingPlaceholder : '正在思考...');
+  const displayContent = item.content || '';
 
   return (
     <List.Item
@@ -68,7 +77,7 @@ const MessageItem = memo(function MessageItem({ item }: MessageItemProps) {
               <Space wrap>
                 <Text strong>{item.speakerName}</Text>
                 {isHost && <Tag color="gold">调度</Tag>}
-                {item.streaming && <Tag color="processing">正在输入</Tag>}
+                {item.streaming && <Tag color="processing">生成中</Tag>}
               </Space>
               <Text type="secondary">{item.createdAt}</Text>
             </Space>
@@ -90,10 +99,13 @@ export function StepRoundtableView({
   judgeState,
   judgeScore,
   judgeReason,
+  discussionMetrics,
   consensusBoard,
   runtimePendingTasks,
   isSending,
+  exportingFormat,
   onStartDemo,
+  onExport,
   notice,
 }: StepRoundtableViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -132,6 +144,21 @@ export function StepRoundtableView({
                   <Tag>{messages.length}</Tag>
                   {activeTypingLabel && <Tag color="processing">{activeTypingLabel}</Tag>}
                 </Space>
+                <Dropdown
+                  menu={{
+                    items: [
+                      { key: 'md', label: '导出 Markdown (.md)' },
+                      { key: 'pdf', label: '导出 PDF (.pdf)' },
+                      { key: 'docx', label: '导出 Word (.docx)' },
+                    ],
+                    onClick: ({ key }) => onExport(key as 'md' | 'pdf' | 'docx'),
+                  }}
+                  trigger={['click']}
+                >
+                  <Button icon={<DownloadOutlined />} loading={!!exportingFormat}>
+                    {exportingFormat ? `导出 ${exportingFormat.toUpperCase()}` : '导出'}
+                  </Button>
+                </Dropdown>
               </Space>
             }
             style={{ borderRadius: 8, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
@@ -192,6 +219,23 @@ export function StepRoundtableView({
         </Col>
 
         <Col xs={24} xl={7} style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
+          <Card size="small" style={{ borderRadius: 8 }}>
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Row align="middle" justify="space-between">
+                <Col><Text strong>讨论仪表盘</Text></Col>
+                <Col><Tag color="blue">第 {discussionMetrics?.round || 0} 轮</Tag></Col>
+              </Row>
+              <Row gutter={[8, 8]}>
+                <Col span={12}><Text type="secondary">新观点数</Text><div>{discussionMetrics?.new_points ?? 0}</div></Col>
+                <Col span={12}><Text type="secondary">重复率</Text><div>{discussionMetrics?.duplicate_rate ?? 0}%</div></Col>
+                <Col span={12}><Text type="secondary">问题:方案</Text><div>{discussionMetrics?.problem_solution_ratio ?? '0:0'}</div></Col>
+                <Col span={12}><Text type="secondary">冲突点</Text><div>{discussionMetrics?.conflict_count ?? 0}</div></Col>
+                <Col span={12}><Text type="secondary">平均耗时</Text><div>{discussionMetrics?.avg_role_duration_ms ?? 0}ms</div></Col>
+                <Col span={12}><Text type="secondary">已解议题</Text><div>{discussionMetrics?.resolved_topics ?? 0}</div></Col>
+              </Row>
+            </Space>
+          </Card>
+
           <Card size="small" style={{ borderRadius: 8 }}>
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
               <Row align="middle" justify="space-between">

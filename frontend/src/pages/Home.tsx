@@ -23,6 +23,11 @@ import type { StepKey, RoundtableRoom, RoleMember, RoundtableStage, JudgeState, 
 import { normalizeRoundtableMessage } from '../hooks/useWorkspace';
 import type { WorkspaceData } from '../api/workspace';
 import { createWorkspace, listWorkspaces, getWorkspace, updateWorkspace, deleteWorkspace } from '../api/workspace';
+import {
+  exportRoundtableDocx,
+  exportRoundtableMarkdown,
+  exportRoundtablePdf,
+} from '../utils/roundtableExport';
 
 const { Sider, Content, Footer } = Layout;
 const { Text } = Typography;
@@ -99,6 +104,7 @@ function Home() {
   const [autoBrainstorm, setAutoBrainstorm] = useState(true);
   const [userPrompt, setUserPrompt] = useState('');
   const [sending, setSending] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<'md' | 'pdf' | 'docx' | null>(null);
   const [roundtableNotice, setRoundtableNotice] = useState<{
     type: 'info' | 'warning' | 'error';
     message: string;
@@ -115,6 +121,15 @@ function Home() {
   const [autoConversationEnabled, setAutoConversationEnabled] = useState(true);
   const [judgeScore, setJudgeScore] = useState<number>(judgeState.score);
   const [judgeReason, setJudgeReason] = useState<string>(judgeState.reason);
+  const [discussionMetrics, setDiscussionMetrics] = useState<{
+    round: number;
+    new_points: number;
+    duplicate_rate: number;
+    problem_solution_ratio: string;
+    conflict_count: number;
+    avg_role_duration_ms: number;
+    resolved_topics: number;
+  } | null>(null);
   
   const [runtimePendingTasks, setRuntimePendingTasks] = useState(0);
   const [customProbeOptions, setCustomProbeOptions] = useState<Record<string, string>>({});
@@ -527,6 +542,18 @@ function Home() {
     }
     if (typeof payload.auto_round_count === 'number') {
       setAutoRoundCount(payload.auto_round_count);
+    }
+    if (payload.discussion_metrics && typeof payload.discussion_metrics === 'object') {
+      const metrics = payload.discussion_metrics as Record<string, unknown>;
+      setDiscussionMetrics({
+        round: Number(metrics.round || 0),
+        new_points: Number(metrics.new_points || 0),
+        duplicate_rate: Number(metrics.duplicate_rate || 0),
+        problem_solution_ratio: String(metrics.problem_solution_ratio || '0:0'),
+        conflict_count: Number(metrics.conflict_count || 0),
+        avg_role_duration_ms: Number(metrics.avg_role_duration_ms || 0),
+        resolved_topics: Number(metrics.resolved_topics || 0),
+      });
     }
   }, [applyBoardResult, applyJudgeResult]);
 
@@ -2085,6 +2112,55 @@ function Home() {
     }
   }, [expectedResult, generateFinalPlan, initialDemand, roomId, roomReady, roundtableStage, sendToRoundtable, sending]);
 
+  const exportRoundtable = useCallback(async (format: 'md' | 'pdf' | 'docx') => {
+    if (!roomReady || messages.length === 0) {
+      message.warning('当前没有可导出的圆桌内容');
+      return;
+    }
+
+    setExportingFormat(format);
+    try {
+      const roomName = roundtableRooms.find((item) => item.id === roomId)?.name || initialDemand.slice(0, 24) || '圆桌讨论';
+      const payload = {
+        fileBaseName: `${roomName}_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}`,
+        initialDemand,
+        expectedResult,
+        messages: messages.filter((item) => !item.streaming && item.content.trim()),
+        judgeState,
+        judgeScore,
+        judgeReason,
+        discussionMetrics,
+        consensusBoard,
+      };
+
+      if (format === 'md') {
+        await exportRoundtableMarkdown(payload);
+      } else if (format === 'pdf') {
+        await exportRoundtablePdf(payload);
+      } else {
+        await exportRoundtableDocx(payload);
+      }
+      message.success(`已导出 ${format.toUpperCase()} 文件`);
+    } catch (error) {
+      console.error('导出圆桌内容失败:', error);
+      message.error('导出失败，请稍后重试');
+    } finally {
+      setExportingFormat(null);
+    }
+  }, [
+    roomReady,
+    messages,
+    roundtableRooms,
+    roomId,
+    initialDemand,
+    expectedResult,
+    judgeState,
+    judgeScore,
+    judgeReason,
+    discussionMetrics,
+    consensusBoard,
+  ]);
+
   const canGoRoles = intentReady;
 
   return (
@@ -2466,10 +2542,13 @@ function Home() {
                 judgeState={judgeState}
                 judgeScore={judgeScore}
                 judgeReason={judgeReason}
+                discussionMetrics={discussionMetrics}
                 consensusBoard={consensusBoard}
                 runtimePendingTasks={runtimePendingTasks}
                 isSending={sending}
+                exportingFormat={exportingFormat}
                 onStartDemo={() => void sendToRoundtable('请各角色先给出最关键的 3-5 条核心要点（不要输出总结性方案）。', 'brief', undefined, 'host', false)}
+                onExport={exportRoundtable}
                 notice={roundtableNotice ? { ...roundtableNotice, closable: true, onClose: () => setRoundtableNotice(null) } : null}
               />
             )}

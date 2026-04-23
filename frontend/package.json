@@ -10,11 +10,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@xyflow/react": "^12.9.3",
     "@ant-design/icons": "^6.1.0",
+    "@xyflow/react": "^12.9.3",
     "antd": "^6.3.2",
     "axios": "^1.13.6",
+    "docx": "^9.6.1",
     "html-to-image": "^1.11.13",
+    "jspdf": "^4.2.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",

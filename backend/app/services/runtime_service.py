@@ -613,7 +613,7 @@ async def _get_scheduling_mode() -> str:
 
     now = time.time()
     if now - _scheduling_mode_cache_time < _SCHEDULING_MODE_CACHE_TTL and _scheduling_mode_cache:
-        return _scheduling_mode_cache.get("mode", "single_round_robin")
+        return _scheduling_mode_cache.get("mode", "parallel_all")
 
     try:
         from app.models.roundtable_config import RoundtableConfig as DBRoundtableConfig
@@ -622,12 +622,12 @@ async def _get_scheduling_mode() -> str:
                 select(DBRoundtableConfig).where(DBRoundtableConfig.config_key == "role_scheduling_mode")
             )
             mode_config = result.scalars().first()
-            mode = mode_config.config_value if mode_config and mode_config.config_value else "single_round_robin"
+            mode = mode_config.config_value if mode_config and mode_config.config_value else "parallel_all"
             _scheduling_mode_cache["mode"] = mode
             _scheduling_mode_cache_time = now
             return mode
     except Exception:
-        return _scheduling_mode_cache.get("mode", "single_round_robin")
+        return _scheduling_mode_cache.get("mode", "parallel_all")
 
 
 # ---- 主持人总结模式进程内缓存 ----
@@ -968,6 +968,8 @@ def _build_roundtable_system_prompt(
         f"期望结果：{expected_result or '未提供'}。",
         "请优先指出有价值的新信息、风险和分歧，不要复述别人已经说过的话。",
         "如果你同意某个观点，必须补充证据、边界或执行条件，禁止空泛附和。",
+        "你的每次输出都必须覆盖：问题/风险、依据/验证、建议方案、预期效果/阈值。",
+        "禁止只提问题不提方案；禁止给出无法验证的空泛判断。",
     ]
     soul_config = role.get("soul_config") or role.get("soulConfig")
     if soul_config:
@@ -1046,7 +1048,125 @@ def _build_roundtable_user_prompt(
 1. 必须围绕核心目标，不要跑题。
 2. 必须提供新的判断、补充或反驳，不能机械重复已有内容。
 3. 如果发现前提不足，请明确指出需要验证什么。
-4. 输出内容保持精炼，避免客套。"""
+4. 输出内容保持精炼，避免客套。
+5. 必须按以下四段结构输出：问题/风险、依据/验证、建议方案、预期效果/阈值。"""
+
+
+def _compose_role_turn_instruction(
+    role: Dict[str, Any],
+    round_index: int,
+    base_user_message: str,
+    recent_peer_messages: List[Dict[str, Any]],
+) -> str:
+    role_name = role.get("name") or "角色"
+    interaction_lines: List[str] = []
+    for item in recent_peer_messages[:2]:
+        peer_name = item.get("speaker_name") or "其他角色"
+        snippet = _safe_text(item.get("content"))[:140]
+        if snippet:
+            interaction_lines.append(f"- 必须回应 {peer_name} 的观点：{snippet}")
+
+    interaction_block = "\n".join(interaction_lines) if interaction_lines else "- 首轮允许直接提出关键判断，但至少补充一条可执行建议。"
+
+    return (
+        f"{base_user_message}\n\n"
+        f"【本轮要求】\n"
+        f"- 当前是第 {round_index} 轮，请只输出最关键的 3-4 条。\n"
+        f"- 你必须输出建设性方案，不能只提问题。\n"
+        f"- 你的每条观点都尽量包含可验证依据或待验证条件。\n"
+        f"- 若存在分歧，请明确点名回应其他角色。\n"
+        f"【必须回应】\n{interaction_block}\n\n"
+        f"【输出格式】\n"
+        f"### {role_name} 观点\n"
+        f"1. 问题/风险：...\n"
+        f"2. 依据/验证：...\n"
+        f"3. 建议方案：...\n"
+        f"4. 预期效果/阈值：...\n"
+    )
+
+
+async def _aggregate_round_insights(
+    llm_settings: Dict[str, Any],
+    payload: Dict[str, Any],
+    role_messages: List[Dict[str, Any]],
+    current_round: int,
+) -> Dict[str, Any]:
+    if not role_messages:
+        return {
+            "host_message": "",
+            "discussion_metrics": {
+                "round": current_round,
+                "new_points": 0,
+                "duplicate_rate": 0,
+                "problem_solution_ratio": "0:0",
+                "conflict_count": 0,
+                "avg_role_duration_ms": 0,
+                "resolved_topics": 0,
+            },
+            "next_focus": "",
+        }
+
+    transcript = "\n\n".join(
+        f"[{msg.get('speaker_name')}] (耗时 {int(msg.get('duration_ms') or 0)}ms)\n{_safe_text(msg.get('content'))}"
+        for msg in role_messages
+    )
+    prompt = (
+        f"【原始需求】{_safe_text(payload.get('initial_demand')) or _safe_text(payload.get('user_message')) or '未提供'}\n"
+        f"【期望结果】{_safe_text(payload.get('expected_result')) or '未提供'}\n"
+        f"【当前轮次】{current_round}\n"
+        f"【本轮角色输出】\n{transcript}\n\n"
+        "请严格输出 JSON："
+        "{"
+        "\"summary\":\"40字内主持人聚合结论\","
+        "\"ranked_points\":[\"去重后的重点1\",\"去重后的重点2\",\"去重后的重点3\"],"
+        "\"conflicts\":[\"关键冲突1\",\"关键冲突2\"],"
+        "\"next_focus\":\"下一轮应聚焦的问题\","
+        "\"duplicate_rate\":0,"
+        "\"problem_count\":0,"
+        "\"solution_count\":0,"
+        "\"resolved_topics\":0"
+        "}"
+    )
+    system_prompt = "你是圆桌讨论的聚合主持人，只负责去重、提炼冲突、排序重点，并输出严格 JSON。"
+    try:
+        result = await _call_llm_json_with_settings(llm_settings, prompt, system_prompt)
+    except Exception:
+        result = {}
+
+    ranked_points = [str(item).strip() for item in (result.get("ranked_points") or []) if str(item).strip()]
+    conflicts = [str(item).strip() for item in (result.get("conflicts") or []) if str(item).strip()]
+    summary = _safe_text(result.get("summary")) or "主持人已完成本轮聚合。"
+    next_focus = _safe_text(result.get("next_focus")) or "请继续围绕关键分歧补充证据与可执行方案。"
+    duplicate_rate = int(result.get("duplicate_rate") or 0)
+    problem_count = int(result.get("problem_count") or 0)
+    solution_count = int(result.get("solution_count") or 0)
+    resolved_topics = int(result.get("resolved_topics") or 0)
+    avg_role_duration_ms = int(
+        sum(int(msg.get("duration_ms") or 0) for msg in role_messages) / max(len(role_messages), 1)
+    )
+
+    host_lines = [f"### 主持人聚合", f"- 本轮总结：{summary}"]
+    if ranked_points:
+        host_lines.append("- 去重后重点：")
+        host_lines.extend([f"  - {item}" for item in ranked_points[:3]])
+    if conflicts:
+        host_lines.append("- 关键冲突：")
+        host_lines.extend([f"  - {item}" for item in conflicts[:2]])
+    host_lines.append(f"- 下一轮聚焦：{next_focus}")
+
+    return {
+        "host_message": "\n".join(host_lines),
+        "next_focus": next_focus,
+        "discussion_metrics": {
+            "round": current_round,
+            "new_points": len(ranked_points),
+            "duplicate_rate": duplicate_rate,
+            "problem_solution_ratio": f"{problem_count}:{solution_count}",
+            "conflict_count": len(conflicts),
+            "avg_role_duration_ms": avg_role_duration_ms,
+            "resolved_topics": resolved_topics,
+        },
+    }
 
 
 def _build_canvas_items(board_state: Dict[str, Any], stage: str) -> Dict[str, List[str]]:
@@ -1247,6 +1367,7 @@ async def _generate_role_reply_stream(
     msg_id: str,
     cancel_event: asyncio.Event,
 ) -> Dict[str, Any]:
+    started = time.perf_counter()
     content = ""
     # 通过 msg_id 找到对应的消息索引
     msg_idx = None
@@ -1331,6 +1452,7 @@ async def _generate_role_reply_stream(
         "summary_metrics": None,
         "streaming": False,
         "created_at": original_created_at,
+        "duration_ms": int((time.perf_counter() - started) * 1000),
     }
 
     current_messages[msg_idx] = final_msg
@@ -1424,9 +1546,6 @@ async def _process_roundtable_task(task_id: str) -> None:
 
         last_checked_msg_index = max(0, len(current_messages) - 1)
 
-        # ---- 群聊模式：角色逐个发言，像真实群聊一样 ----
-        # 跟踪本轮（一圈）内已发言的角色索引，一圈完成后才做评委评估
-        turns_in_current_cycle = 0  # 本圈已发言次数
         judge_state: Optional[Dict[str, Any]] = None
         board_state: Optional[Dict[str, Any]] = None
 
@@ -1469,9 +1588,9 @@ async def _process_roundtable_task(task_id: str) -> None:
             if mentioned_role:
                 speaking_roles = [mentioned_role]
                 schedule_reason = "mentioned"
-            elif scheduling_mode == "sequential_all":
+            elif scheduling_mode in {"parallel_all", "sequential_all", "single_round_robin"}:
                 speaking_roles = roles
-                schedule_reason = "sequential_all"
+                schedule_reason = "parallel_all"
             elif scheduling_mode == "single_random":
                 import random
                 speaking_roles = [random.choice(roles)]
@@ -1531,63 +1650,52 @@ async def _process_roundtable_task(task_id: str) -> None:
                 }
                 await _set_task_state(task_id, result_payload=base_result_payload)
 
-            # 收集摘要异步任务：(msg_id, Task)，随各角色流式输出并发执行
             pending_summary_tasks: List[tuple] = []
+            recent_peer_messages = [
+                msg for msg in current_messages
+                if msg.get("speaker_type") == "agent" and not msg.get("streaming") and _safe_text(msg.get("content"))
+            ][-8:]
 
-            # 顺序流式生成各角色回复——前端可实时看到每个角色逐字输出
+            temp_message_specs: List[tuple[Dict[str, Any], str, str]] = []
             for idx, role in enumerate(speaking_roles):
-                # 1. 广播该角色"正在输入"的状态
-                # 检查是否已存在该角色的 typing 消息（由 roundtable-runs 端点预创建）
-                existing_typing_idx = None
-                for i, msg in enumerate(current_messages):
-                    if (msg.get("speaker_id") == role.get("id") and 
-                        msg.get("speaker_type") == "agent" and 
-                        msg.get("streaming") is True and
-                        msg.get("content") == "正在组织语言..."):
-                        existing_typing_idx = i
-                        break
-                
-                if existing_typing_idx is not None:
-                    # 复用已存在的 typing 消息
-                    temp_msg_id = current_messages[existing_typing_idx]["id"]
-                    # 确保后发言角色的 created_at 严格晚于先发言角色
-                    if idx > 0:
-                        current_messages[existing_typing_idx]["created_at"] = _utcnow().isoformat()
-                else:
-                    # 创建新的 typing 消息
-                    temp_msg_id = f"m_{role.get('id', 'agent')}_{uuid.uuid4().hex[:10]}"
-                    # 确保后发言角色的 created_at 严格晚于先发言角色
-                    role_created_at = _utcnow().isoformat()
-                    typing_msg = {
+                temp_msg_id = f"m_{role.get('id', 'agent')}_{uuid.uuid4().hex[:10]}"
+                current_messages.append(
+                    {
                         "id": temp_msg_id,
                         "speaker_id": role.get("id") or "",
                         "speaker_name": role.get("name") or "角色",
                         "speaker_type": "agent",
-                        "content": "正在组织语言...",
+                        "content": "",
                         "streaming": True,
-                        "created_at": role_created_at,
+                        "created_at": _utcnow().isoformat(),
                     }
-                    current_messages.append(typing_msg)
-                    base_result_payload = {
-                        **base_result_payload,
-                        "messages": current_messages,
-                    }
-                    # typing 状态使用 persist=False 快速推送，减少 DB 写入延迟
-                    await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
+                )
+                peer_candidates = [msg for msg in recent_peer_messages if msg.get("speaker_id") != role.get("id")]
+                if peer_candidates:
+                    pivot = idx % len(peer_candidates)
+                    targeted_messages = [peer_candidates[pivot]]
+                    if len(peer_candidates) > 1:
+                        targeted_messages.append(peer_candidates[(pivot + 1) % len(peer_candidates)])
+                else:
+                    targeted_messages = []
+                role_turn_instruction = _compose_role_turn_instruction(
+                    role,
+                    current_round + 1,
+                    user_message,
+                    targeted_messages,
+                )
+                temp_message_specs.append((role, temp_msg_id, role_turn_instruction))
 
-                # 2. 流式生成回复并立即落库推送（函数内不再阻塞等待摘要）
-                # 立即将 content 置空并推送，确保前端从"正在输入"平滑过渡到流式内容
-                # 找到 typing 消息的索引（可能是预创建的或刚添加的）
-                typing_idx = existing_typing_idx if existing_typing_idx is not None else len(current_messages) - 1
-                current_messages[typing_idx]["content"] = ""
-                base_result_payload = {**base_result_payload, "messages": current_messages}
-                await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
-                role_message = await _generate_role_reply_stream(
+            base_result_payload = {**base_result_payload, "messages": current_messages}
+            await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
+
+            role_tasks = [
+                _generate_role_reply_stream(
                     llm_settings,
                     payload,
                     role,
                     current_stage,
-                    user_message,
+                    role_turn_instruction,
                     memory_summary,
                     task_id,
                     current_messages,
@@ -1595,27 +1703,27 @@ async def _process_roundtable_task(task_id: str) -> None:
                     temp_msg_id,
                     cancel_event,
                 )
-
-                # 4. 立即以 create_task 启动摘要生成，与下一个角色的流式输出并发执行
+                for role, temp_msg_id, role_turn_instruction in temp_message_specs
+            ]
+            role_results = await asyncio.gather(*role_tasks, return_exceptions=True)
+            round_role_messages: List[Dict[str, Any]] = []
+            for result in role_results:
+                if isinstance(result, Exception):
+                    raise result
+                round_role_messages.append(result)
                 summary_task = asyncio.create_task(
-                    _generate_message_summary_with_settings(llm_settings, role_message["content"])
+                    _generate_message_summary_with_settings(llm_settings, result["content"])
                 )
-                pending_summary_tasks.append((role_message["id"], summary_task))
+                pending_summary_tasks.append((result["id"], summary_task))
+                _memory_mgr.update_from_message(result)
 
-                # 5. 使用 content 更新内存摘要（摘要字段此时为空，不影响上下文构建）
-                # 优先使用分层记忆管理器，向后兼容
-                _memory_mgr.update_from_message(role_message)
-                memory_summary = _memory_mgr.get_flat_summary()
-                base_result_payload = {
-                    **base_result_payload,
-                    "messages": current_messages,
-                    "memory_summary": memory_summary,
-                }
-                await _set_task_state(task_id, result_payload=base_result_payload)
-
-                # 群聊模式下（single_round_robin），角色发言后直接轮到下一个角色
-                # 不做逐轮评委评估，等一圈完成后再评估
-                turns_in_current_cycle += 1
+            memory_summary = _memory_mgr.get_flat_summary()
+            base_result_payload = {
+                **base_result_payload,
+                "messages": current_messages,
+                "memory_summary": memory_summary,
+            }
+            await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
 
             # 6. 各角色摘要并发生成，完成一个即推送一次，避免长时间无任何 SSE/缓存更新
             if pending_summary_tasks:
@@ -1667,6 +1775,33 @@ async def _process_roundtable_task(task_id: str) -> None:
                     }
                     await _set_task_state(task_id, result_payload=base_result_payload)
 
+            aggregation = await _aggregate_round_insights(
+                llm_settings,
+                payload,
+                round_role_messages,
+                current_round + 1,
+            )
+            aggregate_message = {
+                "id": f"m_host_aggregate_{uuid.uuid4().hex[:10]}",
+                "speaker_id": "host",
+                "speaker_name": "主持人",
+                "speaker_type": "host",
+                "content": aggregation["host_message"],
+                "streaming": False,
+                "created_at": _utcnow().isoformat(),
+            }
+            current_messages.append(aggregate_message)
+            _memory_mgr.update_from_message(aggregate_message)
+            memory_summary = _memory_mgr.get_flat_summary()
+            base_result_payload = {
+                **base_result_payload,
+                "messages": current_messages,
+                "memory_summary": memory_summary,
+                "discussion_metrics": aggregation["discussion_metrics"],
+                "next_prompt": aggregation["next_focus"],
+            }
+            await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
+
             if current_stage == "brief":
                 current_round += 1
 
@@ -1687,60 +1822,15 @@ async def _process_roundtable_task(task_id: str) -> None:
             except Exception as _comp_err:
                 logger.warning("上下文压缩失败（不影响讨论继续）: %s", _comp_err)
 
-            # ---- 群聊节流评估 ----
-            # 判断是否需要在本轮进行评委评估：
-            # - single_round_robin: 每圈（所有角色都发过一次言）评估一次
-            # - 其他模式: 每轮都评估（保持原有行为）
-            need_evaluation_this_turn = True
-            if scheduling_mode == "single_round_robin" and schedule_reason == "single_round_robin":
-                # 一圈 = 所有角色都发过一次言
-                if turns_in_current_cycle < len(roles):
-                    need_evaluation_this_turn = False
-                else:
-                    turns_in_current_cycle = 0  # 重置计数，开始新的一圈
-
-            if not need_evaluation_this_turn:
-                # 群聊模式：角色发完言直接继续下一轮，不插入评委评估
-                # 但仍需更新 auto_round_count 以保证前端进度条正确
-                base_result_payload = {
-                    **base_result_payload,
-                    "messages": current_messages,
-                    "auto_round_count": current_round,
-                }
-                await _set_task_state(task_id, result_payload=base_result_payload, persist=False)
-                # 直接进入下一轮，主持人不发引导语
-                continue
-
-            # ---- 评委评估（每圈一次，或非 single_round_robin 模式） ----
-            # 广播裁判/主持人"正在总结思考"的状态
-            temp_host_id = f"m_host_{uuid.uuid4().hex[:10]}"
-            typing_host_msg = {
-                "id": temp_host_id,
-                "speaker_id": "host",
-                "speaker_name": "主持人",
-                "speaker_type": "host",
-                "content": "正在提炼共识并规划下一步...",
-                "streaming": True,
-                "created_at": _utcnow().isoformat(),
-            }
-            current_messages.append(typing_host_msg)
-            base_result_payload = {
-                **base_result_payload,
-                "messages": current_messages,
-            }
-            await _set_task_state(task_id, result_payload=base_result_payload)
-
+            # ---- 评委评估 ----
             evaluation = await _evaluate_roundtable(
                 llm_settings,
                 payload,
-                [m for m in current_messages if not m.get("streaming")], # 排除临时消息
+                [m for m in current_messages if not m.get("streaming")],
                 current_round,
                 memory_summary,
             )
-            
-            # 移除主持人的临时消息
-            current_messages.pop()
-            
+
             judge_state = evaluation["judge_state"]
             board_state = evaluation["consensus_board"]
             # 更新分层记忆的共识/分歧层
